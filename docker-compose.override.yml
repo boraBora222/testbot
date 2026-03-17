@@ -1,0 +1,8 @@
+services:
+  bot:
+    command: >
+      python -m watchfiles
+      --filter python
+      --verbosity info
+      "python -m bot.main"
+      /app/bot /app/shared

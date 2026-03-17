@@ -1,0 +1,143 @@
+/* Basic styles for testing static file serving */
+body {
+    font-family: sans-serif;
+    margin: 2em;
+    background-color: #f8f9fa; /* Light gray background */
+    color: #343a40; /* Dark text color */
+}
+
+h1 {
+    color: #007bff; /* Blue heading */
+    border-bottom: 2px solid #dee2e6; /* Light gray border */
+    padding-bottom: 0.3em;
+}
+
+p {
+    line-height: 1.6;
+}
+
+/* Table Styles */
+.applications-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1em;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    background-color: #fff; /* White background for table */
+}
+
+.applications-table th,
+.applications-table td {
+    border: 1px solid #dee2e6; /* Light gray border for cells */
+    padding: 0.75em;
+    text-align: left;
+    vertical-align: top; /* Align content to the top */
+}
+
+.applications-table th {
+    background-color: #e9ecef; /* Lighter gray for header */
+    font-weight: bold;
+}
+
+.applications-table tbody tr:nth-child(odd) {
+    background-color: #f8f9fa; /* Slightly darker gray for odd rows */
+}
+
+.applications-table tbody tr:hover {
+    background-color: #e2e6ea; /* Highlight on hover */
+}
+
+.applications-table td ul {
+    margin: 0;
+    padding-left: 1.2em; /* Indent list items */
+}
+
+.applications-table td li {
+    margin-bottom: 0.3em;
+}
+
+/* Button Styles */
+.btn {
+    padding: 0.5em 1em;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    margin-right: 5px; /* Space between buttons */
+    color: white;
+    text-decoration: none; /* Remove underline from button text if used in <a> */
+    display: inline-block; /* Ensure proper spacing */
+}
+
+.btn-approve {
+    background-color: #28a745; /* Green */
+}
+
+.btn-approve:hover {
+    background-color: #218838; /* Darker green */
+}
+
+.btn-decline {
+    background-color: #dc3545; /* Red */
+}
+
+.btn-decline:hover {
+    background-color: #c82333; /* Darker red */
+}
+
+/* Link style for ID */
+td a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+td a:hover {
+    text-decoration: underline;
+}
+
+/* Column Width Adjustments */
+.applications-table .col-number {
+    width: 5%; /* Narrow */
+    white-space: nowrap; /* Prevent wrapping */
+}
+
+.applications-table .col-status {
+    width: 8%; /* Narrow */
+    white-space: nowrap;
+}
+
+.applications-table .col-date {
+    width: 12%; /* Narrow */
+    white-space: nowrap;
+}
+
+.applications-table .col-user {
+    width: 10%; /* Narrow */
+    white-space: nowrap;
+}
+
+.applications-table .col-answers {
+    width: 45%; /* Wide */
+    /* Allow wrapping for answers */
+}
+
+.applications-table .col-actions {
+    width: 20%; /* Adjust as needed */
+    white-space: nowrap;
+    text-align: center; /* Center buttons */
+}
+
+/* Row Status Highlighting */
+tr.status-approved {
+    background-color: #d4edda !important; /* Light green background (important to override hover/nth-child) */
+    border-left: 5px solid #28a745; /* Green left border */
+}
+
+tr.status-rejected { /* Changed from declined to rejected */
+    background-color: #f8d7da !important; /* Light red background */
+    border-left: 5px solid #dc3545; /* Red left border */
+}
+
+/* Adjust hover for highlighted rows */
+tr.status-approved:hover, tr.status-rejected:hover { /* Changed from declined to rejected */
+    background-color: inherit !important; /* Keep original highlight color on hover */
+}

@@ -1,0 +1,90 @@
+{# Inherit from the base template #}
+{% extends "base.html" %}
+
+{# Define the content block for this specific page #}
+{% block content %}
+    <h1>Интерфейс Модерации</h1>
+    <p>Список заявок, ожидающих рассмотрения:</p>
+
+    {% if applications %}
+    <table class="applications-table">
+        <thead>
+            <tr>
+                <th class="col-number"># / ID</th> {# Combined column #}
+                <th class="col-status">Статус</th>
+                <th class="col-date">Дата подачи</th>
+                
+                <th class="col-user">Пользователь</th>
+                <th class="col-answers">Ответы</th> {# Added class for width control #}
+                <th class="col-actions">Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {# Loop through the applications passed from the backend #}
+            {% for app in applications %}
+            {# Add class to row based on status for styling #}
+            <tr class="status-{{ app.status.lower() if app.status else 'unknown' }}" data-app-id="{{ app._id }}"> {# Add data attribute for JS, handle potential missing status #}
+                {# Display REVERSED sequential number and Application ID as a link #}
+                <td class="col-number">
+                    {# Calculate reversed index: total_items - current_index + 1 #}
+                    {{ (applications|length) - loop.index + 1 }}.
+                    <a href="#" title="Скопировать ID: {{ app._id }}" onclick="navigator.clipboard.writeText('{{ app._id }}'); alert('ID скопирован: {{ app._id }}'); return false;">
+                         ID
+                    </a>
+                </td>
+
+                {# Display Status - will be updated by JS #}
+                <td class="col-status status-text">{{ app.status }}</td>
+
+                {# Display Submission Date (consider formatting) #}
+                <td class="col-date">{{ app.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if app.submitted_at else 'N/A' }}</td>
+
+                {# Display Username as link or fallback #}
+                <td class="col-user">
+                    {% if app.username %}
+                        <a href="http://t.me/{{ app.username }}" target="_blank">{{ app.username }}</a>
+                    {% else %}
+                        {{ app.first_name or app.user_id }} {# Fallback if no username #}
+                    {% endif %}
+                </td>
+
+                {# Display Answers #}
+                <td class="col-answers">
+                    <ul>
+                        {% for question, answer in app.answers.items() %}
+                            <li><strong>{{ question }}:</strong> {{ answer }}</li>
+                        {% else %}
+                            <li>Нет ответов</li>
+                        {% endfor %}
+                    </ul>
+                </td>
+
+                {# Action Buttons - Only show for PENDING status (using Enum passed from backend) #}
+                <td class="col-actions action-buttons">
+                    {# Ensure ApplicationStatus is available in the context from main.py #}
+                    {% if app.status == ApplicationStatus.PENDING.value %}
+                        {# Form for Approve action - points to approve_application endpoint #}
+                        <form class="action-form approve-form" action="{{ url_for('approve_application', application_id=app._id) }}" method="post" style="display: block; margin-bottom: 5px;">
+                            <button type="submit" class="btn btn-approve">Одобрить</button>
+                        </form>
+                        {# Form for Decline action - points to reject_application endpoint #}
+                        <form class="action-form decline-form" action="{{ url_for('reject_application', application_id=app._id) }}" method="post" style="display: block;">
+                            <button type="submit" class="btn btn-decline" style="margin-bottom: 5px;">Отклонить</button>
+                            {# Reason input moved below the button #}
+                            <input type="text" name="reason" class="decline-reason" placeholder="Причина отказа (опционально)" style="width: 100%; box-sizing: border-box; font-size: 0.9em; padding: 0.3em;">
+                        </form>
+                    {% else %}
+                        {# Display text or nothing if already moderated #}
+                        Обработана
+                    {% endif %}
+                    {# Removed extra </form> tag that was here #}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>Нет заявок, ожидающих модерации.</p>
+    {% endif %}
+
+{% endblock %}

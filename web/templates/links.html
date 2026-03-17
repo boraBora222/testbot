@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h1 class="mb-4">{{ page_title }}</h1>
+
+    {% if links %}
+    <div class="table-responsive">
+        <table class="table table-striped table-hover">
+            <thead class="thead-light">
+                <tr>
+                    <th scope="col">Дата/Время (UTC)</th>
+                    <th scope="col">Пользователь</th>
+                    <th scope="col">Материал</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for link in links %}
+                <tr>
+                    <td>{{ link.submitted_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>
+                        {% if link.username %}
+                            <a href="https://t.me/{{ link.username }}" target="_blank">@{{ link.username }}</a>
+                            ({{ link.first_name }})
+                        {% else %}
+                            {{ link.first_name }} (ID: {{ link.user_id }})
+                        {% endif %}
+                        {# Ban button #}
+                        <form action="{{ url_for('ban_user', user_id=link.user_id) }}" method="post" style="display:inline-block; margin-left: 10px;">
+                            {% if link.user_id in banned_ids %}
+                                <button type="submit" disabled title="Уже забанен">Забанен</button>
+                            {% else %}
+                                <button type="submit" onclick="return confirm('Забанить пользователя {{ link.user_id }}?')">Забанить</button>
+                            {% endif %}
+                        </form>
+                    </td>
+                    {# Display content based on type - Removed style from td #}
+                    <td>
+                        {% if link.content_type == 'photo' and link.telegram_file_id %}
+                            <div>
+                                {# Display image using the new /file/ endpoint #}
+                                <a href="/file/{{ link.telegram_file_id }}" target="_blank" title="Открыть в полном размере">
+                                    <img src="/file/{{ link.telegram_file_id }}"
+                                         alt="Image Preview (ID: {{ link.telegram_file_id }})"
+                                         style="max-width: 200px; max-height: 200px; object-fit: contain; display: block; margin-bottom: 5px;"
+                                         onerror="this.style.display='none'; this.nextElementSibling.style.display='block';" {# Hide img on error, show fallback text #}
+                                         loading="lazy"> {# Lazy load images #}
+                                </a>
+                                <small style="display: none;">[Не удалось загрузить превью]</small> {# Fallback text #}
+                                {% if link.caption %}
+                                    <p style="margin-top: 5px;"><strong>Подпись:</strong> {{ link.caption }}</p>
+                                {% endif %}
+                                {% if link.file_name %} {# Display filename if available (from document) #}
+                                     <small>(Имя файла: {{ link.file_name }})</small>
+                                {% endif %}
+                            </div>
+                        {% elif link.content_type == 'text' %}
+                            {# Wrap text content in pre tag to preserve formatting without stretching the cell #}
+                            <pre style="white-space: pre-wrap; word-break: break-word; margin: 0;">{{ link.text }}</pre>
+                        {% else %}
+                            Неизвестный тип контента.
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="alert alert-info" role="alert">
+        Пока нет присланных материалов.
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

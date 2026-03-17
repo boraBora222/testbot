@@ -1,0 +1,17 @@
+# Telegram Bot dependencies
+aiogram>=3.0.0 # Asynchronous framework for Telegram Bot API
+motor>=3.0.0   # Asynchronous MongoDB driver
+
+# Web Interface dependencies
+fastapi>=0.100.0 # Modern, fast (high-performance) web framework
+uvicorn[standard]>=0.20.0 # ASGI server
+jinja2>=3.0.0    # Template engine for web interface
+python-multipart>=0.0.5 # Required for form data parsing in FastAPI
+
+# Common dependencies
+python-dotenv>=1.0.0 # Reads key-value pairs from .env file
+pydantic[email]>=2.0.0 # Data validation
+pydantic-settings>=2.0.0 # Settings management based on pydantic
+
+# Redis client (supports asyncio)
+redis[hiredis]>=5.0.0 # Add redis client, hiredis for potential performance boost

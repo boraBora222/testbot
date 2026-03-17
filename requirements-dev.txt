@@ -1,0 +1,4 @@
+-r requirements.txt
+watchfiles
+python-dotenv
+

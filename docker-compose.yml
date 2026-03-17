@@ -1,0 +1,68 @@
+# Этот файл docker-compose предназначен для запуска одного экземпляра бота (bot2).
+# Он использует переменные окружения из файла .env для параметризации имен контейнеров,
+# сетей, томов, портов и настроек подключения к базам данных, обеспечивая изоляцию.
+
+services:
+  mongo: # Переименовано с mongodb для краткости
+    image: mongo:7
+    container_name: ${BOT_NAME}_mongo # Параметризованное имя контейнера
+    volumes:
+      - mongo_data:/data/db # Ссылка на статично определенный том ниже
+    networks:
+      - default # Ссылка на статично определенную сеть ниже
+    restart: unless-stopped
+    # Внешние порты удалены для изоляции, доступ внутри сети Docker
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${BOT_NAME}_redis # Параметризованное имя контейнера
+    networks:
+      - default # Ссылка на статично определенную сеть ниже
+    restart: unless-stopped
+    # Внешние порты удалены для изоляции, доступ внутри сети Docker
+
+  bot: # Переименовано с telegram_bot
+    build:
+      context: . # Контекст сборки - текущая директория (bot2/)
+      dockerfile: bot/Dockerfile # Путь к Dockerfile относительно контекста (.)
+    container_name: ${BOT_NAME}_bot # Параметризованное имя контейнера
+    env_file:
+      - ${ENV_FILE:-.env}
+    depends_on:
+      - mongo # Обновленное имя зависимости
+      - redis
+    restart: unless-stopped
+    volumes:
+      # Пути монтирования относительно контекста (.)
+      - ./bot:/app/bot
+      - ./shared:/app/shared
+    networks:
+      - default # Ссылка на статично определенную сеть ниже
+
+  web: # Переименовано с web_interface
+    build:
+      context: . # Контекст сборки - текущая директория (bot2/)
+      dockerfile: web/Dockerfile # Путь к Dockerfile относительно контекста (.)
+    container_name: ${BOT_NAME}_web # Параметризованное имя контейнера
+    env_file:
+      - ${ENV_FILE:-.env}
+    ports:
+      # Маппинг внешнего порта (из .env) на внутренний порт FastAPI (8000)
+      - "${WEB_PORT}:8000"
+    depends_on:
+      - mongo # Обновленное имя зависимости
+      - redis
+    restart: unless-stopped
+    volumes:
+      # Пути монтирования относительно контекста (.)
+      - ./web:/app/web
+      - ./shared:/app/shared
+    networks:
+      - default # Ссылка на статично определенную сеть ниже
+
+volumes:
+  mongo_data: {} # Статичное имя тома. Docker Compose добавит префикс проекта (bot2_)
+
+networks:
+  default: # Статичное имя сети. Docker Compose создаст сеть bot2_default
+    driver: bridge # Стандартный драйвер bridge

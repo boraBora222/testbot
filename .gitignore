@@ -1,0 +1,36 @@
+# Environment files
+.env
+.env.dev
+.env.*
+
+# Но НЕ игнорить .env.example 
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Docker
+*.log
+
+

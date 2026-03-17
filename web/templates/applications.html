@@ -1,0 +1,184 @@
+{# Inherit from the base template #}
+{% extends "base.html" %}
+
+{# Define the content block for this specific page #}
+{% block content %}
+    <h1>Интерфейс Модерации</h1>
+    <p>Список заявок, ожидающих рассмотрения:</p>
+
+    {% if applications %}
+    <table class="applications-table">
+        <thead>
+            <tr>
+                <th class="col-number"># / ID</th> {# Combined column #}
+                <th class="col-status">Статус</th>
+                <th class="col-date">Дата подачи</th>
+
+                <th class="col-user">Пользователь</th>
+                <th class="col-answers">Ответы</th> {# Added class for width control #}
+                <th class="col-actions">Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {# Loop through the applications passed from the backend #}
+            {% for app in applications %}
+            {# Add class to row based on status for styling #}
+            <tr class="status-{{ app.status.lower() if app.status else 'unknown' }}" data-app-id="{{ app._id }}"> {# Add data attribute for JS, handle potential missing status #}
+                {# Display REVERSED sequential number and Application ID as a link #}
+                <td class="col-number">
+                    {# Calculate reversed index: total_items - current_index + 1 #}
+                    {{ (applications|length) - loop.index + 1 }}.
+                    <a href="#" title="Скопировать ID: {{ app._id }}" onclick="navigator.clipboard.writeText('{{ app._id }}'); alert('ID скопирован: {{ app._id }}'); return false;">
+                         ID
+                    </a>
+                </td>
+
+                {# Display Status - will be updated by JS #}
+                <td class="col-status status-text">{{ app.status }}</td>
+
+                {# Display Submission Date (consider formatting) #}
+                <td class="col-date">{{ app.submitted_at.strftime('%Y-%m-%d %H:%M:%S') if app.submitted_at else 'N/A' }}</td>
+
+                {# Display Username as link or fallback #}
+                <td class="col-user">
+                    {% if app.username %}
+                        <a href="http://t.me/{{ app.username }}" target="_blank">{{ app.username }}</a>
+                    {% else %}
+                        {{ app.first_name or app.user_id }} {# Fallback if no username #}
+                    {% endif %}
+                </td>
+
+                {# Display Answers #}
+                <td class="col-answers">
+                    <ul>
+                        {% for question, answer in app.answers.items() %}
+                            <li><strong>{{ question }}:</strong> {{ answer }}</li>
+                        {% else %}
+                            <li>Нет ответов</li>
+                        {% endfor %}
+                    </ul>
+                </td>
+
+                {# Action Buttons - Only show for PENDING status (using Enum passed from backend) #}
+                <td class="col-actions action-buttons">
+                    {# Ensure ApplicationStatus is available in the context from main.py #}
+                    {% if app.status == ApplicationStatus.PENDING.value %}
+                        {# Form for Approve action - points to approve_application endpoint #}
+                        <form class="action-form approve-form" action="{{ url_for('approve_application', application_id=app._id) }}" method="post" style="display: block; margin-bottom: 5px;">
+                            <button type="submit" class="btn btn-approve">Одобрить</button>
+                        </form>
+                        {# Form for Decline action - points to reject_application endpoint #}
+                        <form class="action-form decline-form" action="{{ url_for('reject_application', application_id=app._id) }}" method="post" style="display: block;">
+                            <button type="submit" class="btn btn-decline" style="margin-bottom: 5px;">Отклонить</button>
+                            {# Reason input moved below the button #}
+                            <input type="text" name="reason" class="decline-reason" placeholder="Причина отказа (опционально)" style="width: 100%; box-sizing: border-box; font-size: 0.9em; padding: 0.3em;">
+                        </form>
+                    {% else %}
+                        {# Display text or nothing if already moderated #}
+                        Обработана
+                    {% endif %}
+                    {# Removed extra </form> tag that was here #}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>Нет заявок, ожидающих модерации.</p>
+    {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+{# Add the JavaScript specific to this page #}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const forms = document.querySelectorAll('.action-form');
+
+        forms.forEach(form => {
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault(); // Prevent default form submission
+
+                const url = form.action;
+                const method = form.method.toUpperCase();
+                const formData = new FormData(form); // Use FormData for easy handling
+
+                // Find the parent row and application ID
+                const row = form.closest('tr');
+                const appId = row.getAttribute('data-app-id');
+                if (!appId) {
+                    console.error('Could not find application ID for the row.');
+                    alert('Произошла ошибка: не удалось определить ID заявки.');
+                    return;
+                }
+
+                // Determine action type for UI update (use lowercase status values from Enum)
+                const isApprove = form.classList.contains('approve-form');
+                // Use 'rejected' instead of 'declined' to match Enum and CSS
+                const newStatus = isApprove ? 'approved' : 'rejected'; // Use lowercase 'rejected'
+                const newStatusClass = `status-${newStatus}`; // e.g., status-approved, status-rejected
+
+                // Disable buttons during request
+                form.querySelectorAll('button').forEach(btn => btn.disabled = true);
+
+                try {
+                    // Construct the correct API URL based on the prefix set in main.py
+                    // The form action might be relative, ensure it points correctly
+                    // Example: If form action is "/api/..." and router prefix is "/applications",
+                    // the final URL should be "/applications/api/...".
+                    // Fetch API usually handles relative URLs correctly based on the page URL.
+                    // Let's assume the form action is already correct relative to the page.
+                    const response = await fetch(url, {
+                        method: method,
+                        body: formData, // Send form data directly
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json',
+                        }
+                    });
+
+                    if (response.ok) { // Check for 2xx status codes (specifically 204 No Content)
+                        console.log(`Application ${appId} status updated to ${newStatus}`);
+
+                        // Update UI
+                        const statusCell = row.querySelector('.col-status.status-text');
+                        const actionsCell = row.querySelector('.col-actions.action-buttons');
+
+                        if (statusCell) {
+                            statusCell.textContent = newStatus;
+                        }
+                        if (actionsCell) {
+                            actionsCell.innerHTML = 'Обработана'; // Remove buttons
+                        }
+
+                        // Update row class for styling
+                        row.className = ''; // Clear existing status classes first
+                        row.classList.add(newStatusClass);
+                        row.setAttribute('data-app-id', appId); // Ensure data-app-id remains
+
+                    } else {
+                        // Handle errors (e.g., 404, 422, 500)
+                        let errorMsg = `Ошибка ${response.status}: ${response.statusText}`;
+                        try {
+                            const errorData = await response.json();
+                            errorMsg += `\n${errorData.detail || JSON.stringify(errorData)}`;
+                        } catch (jsonError) {
+                            // Response might not be JSON
+                            console.warn('Could not parse error response as JSON.');
+                        }
+                        console.error('Failed to update application status:', errorMsg);
+                        alert(`Не удалось обновить статус заявки:\n${errorMsg}`);
+                    }
+
+                } catch (error) {
+                    console.error('Network or other error:', error);
+                    alert(`Произошла сетевая ошибка: ${error.message}`);
+                } finally {
+                    // Re-enable buttons even if there was an error
+                    form.querySelectorAll('button').forEach(btn => btn.disabled = false);
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}

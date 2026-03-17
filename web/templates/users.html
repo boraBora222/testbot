@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Пользователи Бота{% endblock %}
+
+{% block content %}
+<h1>Пользователи Бота</h1>
+
+{# Форма для отправки сообщения всем #}
+<form action="{{ url_for('broadcast_message') }}" method="post">
+    <h2>Отправить сообщение всем пользователям</h2>
+    <textarea name="message" rows="5" cols="50" placeholder="Введите ваше сообщение здесь..." required></textarea>
+    <br>
+    <button type="submit">Отправить всем</button>
+</form>
+
+<hr>
+
+{# Таблица с пользователями #}
+<h2>Список пользователей ({{ users | length }})</h2>
+{% if users %}
+    <table border="1" style="width:100%; border-collapse: collapse;">
+        <thead>
+            <tr>
+                <th>User ID</th>
+                <th>Username</th>
+                <th>Имя</th>
+                <th>Фамилия</th>
+                <th>Первый визит</th>
+                <th>Последний визит</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user.user_id }}</td>
+                <td>
+                    {% if user.username %}
+                        <a href="https://t.me/{{ user.username }}" target="_blank">@{{ user.username }}</a>
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td>{{ user.first_name | default('-', true) }}</td>
+                <td>{{ user.last_name | default('-', true) }}</td>
+                {# Форматируем дату и время. Добавляем 'Z' для указания UTC #}
+                <td>{{ user.first_seen_at.strftime('%Y-%m-%d %H:%M:%S') if user.first_seen_at else '-' }} UTC</td>
+                <td>
+                    {{ user.last_seen_at.strftime('%Y-%m-%d %H:%M:%S') if user.last_seen_at else '-' }} UTC
+                    {# Ban quick action #}
+                    <form action="{{ url_for('ban_user', user_id=user.user_id) }}" method="post" style="display:inline-block; margin-left: 10px;">
+                        {% if banned_ids and (user.user_id in banned_ids) %}
+                            <button type="submit" disabled title="Уже забанен">Забанен</button>
+                        {% else %}
+                            <button type="submit" onclick="return confirm('Забанить пользователя {{ user.user_id }}?')">Забанить</button>
+                        {% endif %}
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>Нет пользователей для отображения. Пользователи появятся здесь после того, как они запустят бота командой /start.</p>
+{% endif %}
+
+{% endblock %}
