@@ -3,6 +3,7 @@ import json
 import logging
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 # Import local modules
 from .redis_client import get_redis_client
@@ -107,7 +108,7 @@ async def listen_application_updates(bot: Bot):
             # TODO: Implement more robust rate limiting if needed
             await asyncio.sleep(1.0) # Sleep for 1 second between processing messages
 
-        except redis.ConnectionError as e:
+        except RedisConnectionError as e:
             logger.error(f"Redis connection error: {e}. Reconnecting...")
             # Implement reconnection logic if needed, or rely on Redis client library
             await asyncio.sleep(5) # Wait before retrying
@@ -191,7 +192,7 @@ async def listen_broadcast_messages(bot: Bot):
             # Simple rate limiting to avoid hitting Telegram limits too quickly
             await asyncio.sleep(0.1) # Sleep for 100ms between messages
 
-        except redis.ConnectionError as e:
+        except RedisConnectionError as e:
             logger.error(f"Redis connection error in broadcast listener: {e}. Reconnecting...")
             await asyncio.sleep(5)
         except Exception as e:

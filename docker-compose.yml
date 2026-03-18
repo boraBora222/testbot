@@ -5,7 +5,7 @@
 services:
   mongo: # Переименовано с mongodb для краткости
     image: mongo:7
-    container_name: ${BOT_NAME}_mongo # Параметризованное имя контейнера
+    container_name: ${BOT_NAME:-bot}_mongo # Параметризованное имя контейнера (с дефолтом)
     volumes:
       - mongo_data:/data/db # Ссылка на статично определенный том ниже
     networks:
@@ -15,7 +15,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: ${BOT_NAME}_redis # Параметризованное имя контейнера
+    container_name: ${BOT_NAME:-bot}_redis # Параметризованное имя контейнера (с дефолтом)
     networks:
       - default # Ссылка на статично определенную сеть ниже
     restart: unless-stopped
@@ -25,7 +25,7 @@ services:
     build:
       context: . # Контекст сборки - текущая директория (bot2/)
       dockerfile: bot/Dockerfile # Путь к Dockerfile относительно контекста (.)
-    container_name: ${BOT_NAME}_bot # Параметризованное имя контейнера
+    container_name: ${BOT_NAME:-bot}_bot # Параметризованное имя контейнера (с дефолтом)
     env_file:
       - ${ENV_FILE:-.env}
     depends_on:
@@ -43,12 +43,12 @@ services:
     build:
       context: . # Контекст сборки - текущая директория (bot2/)
       dockerfile: web/Dockerfile # Путь к Dockerfile относительно контекста (.)
-    container_name: ${BOT_NAME}_web # Параметризованное имя контейнера
+    container_name: ${BOT_NAME:-bot}_web # Параметризованное имя контейнера (с дефолтом)
     env_file:
       - ${ENV_FILE:-.env}
     ports:
       # Маппинг внешнего порта (из .env) на внутренний порт FastAPI (8000)
-      - "${WEB_PORT}:8000"
+      - "${WEB_PORT:-8071}:8000"
     depends_on:
       - mongo # Обновленное имя зависимости
       - redis
