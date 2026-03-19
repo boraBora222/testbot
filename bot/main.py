@@ -3,16 +3,13 @@ import logging
 import sys
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-# Removed MemoryStorage import as FSM is not used for submission
-# from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 
-# Import local modules
 from .config import settings
-# Import handlers (questionnaire is disabled)
-from .handlers import common #, questionnaire
-# Import common helper functions
+from .handlers import common  #, questionnaire
 from .handlers.common import set_bot_commands
+from .crypto_exchange_bot import router as crypto_exchange_router
 # Import Redis client functions
 from .redis_client import get_redis_pool, close_redis_pool
 # Import the specific queue consumer needed
@@ -67,23 +64,18 @@ async def main() -> None:
     #     logger.critical("REDIS_HOST is not defined...")
     #     sys.exit(1)
     
-    # Initialize Bot instance with default parse mode which will be passed to all API calls
     bot = Bot(
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-    # Initialize Dispatcher without storage if FSM is not needed
-    # If other parts might use FSM later, keep MemoryStorage or switch to RedisStorage
-    # storage = MemoryStorage()
-    # dp = Dispatcher(storage=storage)
-    dp = Dispatcher() # Initialize without storage
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
 
-    # Register startup and shutdown handlers
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Register routers/handlers
     dp.include_router(common.router)
+    dp.include_router(crypto_exchange_router)
     # dp.include_router(questionnaire.router) # Questionnaire router is disabled
     # Include other routers as needed
 

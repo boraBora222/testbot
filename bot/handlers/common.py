@@ -16,6 +16,7 @@ from shared.db import get_db, is_user_banned
 from shared.models import LinkDB, BotUser # Added BotUser
 # Import settings
 from shared.config import settings
+from bot.crypto_exchange_bot import REPLY_MENU_BUTTONS, build_reply_main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,14 @@ async def set_bot_commands(bot: Bot):
     """Sets the bot commands in the Telegram menu."""
     commands = [
         BotCommand(command="start", description="Начать работу с ботом"),
-        # Removed submit_link command
+        BotCommand(command="menu", description="Главное меню обменника"),
+        BotCommand(command="exchange", description="Начать обмен криптовалюты"),
+        BotCommand(command="rates", description="Курсы популярных пар"),
+        BotCommand(command="orders", description="Мои заявки (заглушка)"),
+        BotCommand(command="profile", description="Профиль пользователя"),
+        BotCommand(command="support", description="Связаться с поддержкой"),
+        BotCommand(command="cancel", description="Отменить текущий сценарий"),
         BotCommand(command="stop", description="Прекратить работу и удалить данные"),
-        # Add other commands if needed
     ]
     try:
         await bot.set_my_commands(commands)
@@ -157,10 +163,11 @@ async def handle_start(message: types.Message): # Removed state: FSMContext
     welcome_text = (
         f"Привет, {user_name}!\n\n"
         "Я помогу передать мистеру X ссылки, истории, текст или фото.\n"
-        "Просто отправьте их мне в любое время."
+        "Просто отправьте их мне в любое время.\n\n"
+        "Также доступно демо-меню криптообменника — используйте /menu или кнопки ниже."
     )
-    # Removed reply_markup=keyboard
-    await message.answer(text=welcome_text)
+    reply_keyboard = build_reply_main_menu_keyboard()
+    await message.answer(text=welcome_text, reply_markup=reply_keyboard)
 
 
 # --- Stop Command Handler ---
@@ -198,7 +205,7 @@ async def handle_stop(message: types.Message): # Removed state: FSMContext
 # --- Text Message Handler (always active) ---
 
 # Removed state filter LinkSubmissionFSM.waiting_for_link
-@router.message(F.text) # Filter for text messages only
+@router.message(F.text & ~F.text.in_(REPLY_MENU_BUTTONS)) # Filter for text messages only, excluding menu buttons
 async def handle_link_message(message: types.Message, bot: Bot): # Removed state: FSMContext
     """Handles any text message containing the link/text."""
     user = message.from_user
