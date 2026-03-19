@@ -101,7 +101,7 @@ async def notify_master_users(bot: Bot, link_data: LinkDB, link_id: str):
     if link_data.content_type == 'text':
         safe_content = html.escape(link_data.text or "")
         message_text = (
-            f"Поступил новый материал (текст) от {safe_username} ({safe_first_name}).\n\n"
+            f"Поступил НОВЫЙ материал (текст) от {safe_username} ({safe_first_name}).\n\n"
             f"<b>Текст:</b>\n<pre>{safe_content}</pre>\n\n"
             f'<a href="{safe_admin_link}">Посмотреть в админке</a>'
         )
@@ -109,7 +109,7 @@ async def notify_master_users(bot: Bot, link_data: LinkDB, link_id: str):
     elif link_data.content_type == 'photo':
         safe_caption = html.escape(link_data.caption or "Без подписи")
         message_text = (
-            f"Поступил новый материал (фото) от {safe_username} ({safe_first_name}).\n\n"
+            f"Паступил новый материал (фото) от {safe_username} ({safe_first_name}).\n\n"
             f"<b>Подпись:</b>\n<pre>{safe_caption}</pre>\n\n"
             f'<a href="{safe_admin_link}">Посмотреть в админке</a>'
         )
