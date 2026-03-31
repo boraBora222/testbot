@@ -1,7 +1,13 @@
-from typing import Dict, Any, Optional, Literal # Added Literal
+from decimal import Decimal
+from typing import Any, Dict, Optional, Literal
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone # Added timezone
-from .types.enums import ApplicationStatus # Import the enum
+from datetime import datetime, timezone
+from .types.enums import (
+    ApplicationStatus,
+    ExchangeType,
+    MaterialContentType,
+    OrderStatus,
+)
 
 # Define an Enum for application status later if needed
 # from enum import Enum
@@ -93,6 +99,100 @@ class BannedUser(BaseModel):
     reason: Optional[str] = None
     banned_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     banned_by: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class ExchangeUserDB(BaseModel):
+    """MongoDB document for Telegram users in the demo exchange flow."""
+
+    telegram_user_id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    first_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_activity_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    is_banned: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Config:
+        populate_by_name = True
+
+
+class OrderDB(BaseModel):
+    """MongoDB document for demo exchange orders."""
+
+    order_id: str
+    user_id: int
+    username: Optional[str] = None
+    exchange_type: ExchangeType
+    from_currency: str
+    to_currency: str
+    amount: Decimal
+    network: str
+    address: str
+    rate: Decimal
+    fee_percent: Decimal
+    fee_amount: Decimal
+    receive_amount: Decimal
+    status: OrderStatus = OrderStatus.NEW
+    is_demo: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Config:
+        populate_by_name = True
+
+
+class MaterialDB(BaseModel):
+    """MongoDB document for generic user materials."""
+
+    user_id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    content_type: MaterialContentType
+    text: Optional[str] = None
+    file_id: Optional[str] = None
+    file_name: Optional[str] = None
+    mime_type: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Config:
+        populate_by_name = True
+
+
+class SupportMessageDB(BaseModel):
+    """MongoDB document for support messages."""
+
+    user_id: int
+    username: Optional[str] = None
+    text: str
+    has_attachment: bool = False
+    is_processed: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Config:
+        populate_by_name = True
+
+
+class WebsiteSubmissionDB(BaseModel):
+    """MongoDB document for public website submissions."""
+
+    source: Literal["request_modal", "contacts", "calculator"]
+    locale: Literal["ru", "en"]
+    page: str
+    name: str
+    company: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    contact: Optional[str] = None
+    subject: Optional[str] = None
+    message: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    status: Literal["new"] = "new"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         populate_by_name = True

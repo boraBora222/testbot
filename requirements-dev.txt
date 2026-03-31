@@ -1,4 +1,5 @@
 -r requirements.txt
 watchfiles
 python-dotenv
+pytest>=8.0.0
 

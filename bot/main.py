@@ -1,74 +1,72 @@
 import asyncio
 import logging
 import sys
-from aiogram import Bot, Dispatcher, types
+from datetime import timedelta
+
+from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.redis import RedisStorage
 
 from .config import settings
-from .handlers import common  #, questionnaire
+from .handlers import common
 from .handlers.common import set_bot_commands
 from .crypto_exchange_bot import router as crypto_exchange_router
-# Import Redis client functions
 from .redis_client import get_redis_pool, close_redis_pool
-# Import the specific queue consumer needed
-from .queue_consumer import listen_broadcast_messages # Import the broadcast listener
-# from .queue_consumer import listen_application_updates # Keep application listener commented out
-from shared import db # Import shared DB functions
+from .queue_consumer import (
+    listen_broadcast_messages,
+    listen_manager_notifications,
+    listen_order_status_messages,
+)
+from shared import db
 
-# Configure logging
-# TODO: Configure logging more robustly (e.g., using logging.config.dictConfig)
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 logger = logging.getLogger(__name__)
+
 
 async def on_startup(bot: Bot):
     """Actions to perform on bot startup."""
     logger.info("Starting bot...")
-    # Connect to Database
     await db.connect_db()
-    # Set bot commands
     await set_bot_commands(bot)
-    # Initialize Redis pool
     get_redis_pool()
-    logger.info("Redis pool initialized.")
-    # Start the broadcast message listener
     asyncio.create_task(listen_broadcast_messages(bot))
-    logger.info("Broadcast message queue listener started.")
-    # Keep application listener commented out
-    # asyncio.create_task(listen_application_updates(bot))
-    # logger.info("Application update queue listener started.")
+    asyncio.create_task(listen_order_status_messages(bot))
+    asyncio.create_task(listen_manager_notifications(bot))
+    logger.info("Redis queue listeners started.")
+
 
 async def on_shutdown(bot: Bot):
     """Actions to perform on bot shutdown."""
     logger.info("Stopping bot...")
-    # Close database connection
     await db.disconnect_db()
-    # Close Redis pool
     await close_redis_pool()
-    # Close the bot's session to prevent dangling connections
     await bot.session.close()
     logger.info("Bot stopped.")
 
+
 async def main() -> None:
     """Main function to initialize and run the bot."""
-    # Ensure essential settings are present
     if not settings.telegram_bot_token or settings.telegram_bot_token == "DEFINE_ME":
         logger.critical("TELEGRAM_BOT_TOKEN is not defined in settings. Exiting.")
         sys.exit(1)
     if not settings.mongo_uri:
         logger.critical("MONGO_URI is not defined in settings. Exiting.")
         sys.exit(1)
-    # Add check for Redis settings if critical
-    # if not settings.redis_host:
-    #     logger.critical("REDIS_HOST is not defined...")
-    #     sys.exit(1)
-    
+
     bot = Bot(
         token=settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    storage = MemoryStorage()
+    storage = RedisStorage.from_url(
+        settings.redis_url,
+        state_ttl=timedelta(minutes=settings.fsm_timeout_minutes),
+        data_ttl=timedelta(minutes=settings.fsm_timeout_minutes),
+    )
     dp = Dispatcher(storage=storage)
 
     dp.startup.register(on_startup)
@@ -76,14 +74,8 @@ async def main() -> None:
 
     dp.include_router(common.router)
     dp.include_router(crypto_exchange_router)
-    # dp.include_router(questionnaire.router) # Questionnaire router is disabled
-    # Include other routers as needed
-
-    # Start polling
-    # await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    # It's generally recommended to remove startup/shutdown logic from start_polling
-    # and handle it via the registered handlers above.
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     try:

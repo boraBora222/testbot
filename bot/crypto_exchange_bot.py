@@ -1,17 +1,10 @@
-import asyncio
 import logging
-import random
-import string
-from pathlib import Path
-from typing import Dict, List, Tuple
+from decimal import Decimal
+from math import ceil
 
-from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -19,729 +12,701 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
 from .config import settings
-
+from .exchange_logic import (
+    calculate_order_preview,
+    format_datetime_for_user,
+    format_money,
+    format_rate,
+    get_available_from_currencies,
+    get_available_to_currencies,
+    get_exchange_type_label,
+    get_network_currency,
+    get_network_label,
+    get_network_options,
+    get_order_status_emoji,
+    get_order_status_label,
+    get_rates_snapshot,
+    validate_address,
+    validate_amount,
+)
+from .redis_client import get_redis_client, publish_message
+from .states import ExchangeStates, SupportStates
+from shared import db
+from shared.models import OrderDB
+from shared.types.enums import ExchangeType
 
 logger = logging.getLogger(__name__)
-
-
-class ExchangeStates(StatesGroup):
-    choose_type = State()
-    choose_from_currency = State()
-    choose_to_currency = State()
-    choose_network = State()
-    enter_amount = State()
-    enter_address = State()
-    confirm = State()
-
-
 router = Router(name="crypto_exchange")
 
-
-BASE_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = BASE_DIR / "templates"
-
-jinja_env = Environment(
-    loader=FileSystemLoader(str(TEMPLATES_DIR)),
-    autoescape=select_autoescape(enabled_extensions=("jinja2",)),
-)
-
-
-def render_screen(screen: str, **context: object) -> str:
-    template = jinja_env.get_template("crypto_menu.jinja2")
-    return template.render(screen=screen, **context)
-
-
-SUPPORTED_CURRENCIES: List[str] = ["BTC", "ETH", "USDT", "USDC", "TON", "LTC"]
-
-NETWORKS_BY_CURRENCY: Dict[str, List[str]] = {
-    "BTC": ["BTC"],
-    "ETH": ["ERC20"],
-    "USDT": ["TRC20", "ERC20", "BEP20", "TON"],
-    "USDC": ["ERC20", "BEP20"],
-    "TON": ["TON"],
-    "LTC": ["LTC"],
-}
-
-RATES_USD: Dict[str, float] = {
-    "BTC": 65000.0,
-    "ETH": 3500.0,
-    "USDT": 1.0,
-    "USDC": 1.0,
-    "TON": 5.0,
-    "LTC": 85.0,
-}
-
-FEE_PERCENT = 1.0
-MIN_AMOUNT = 50.0
-
-
-REPLY_MENU_BUTTONS: List[str] = [
-    "🔄 Обменять",
-    "💱 Курсы",
-    "📜 Мои заявки",
+REPLY_MENU_BUTTONS = [
+    "💱 Обмен",
+    "📊 Курсы",
+    "📋 Заявки",
     "👤 Профиль",
-    "❓ FAQ",
-    "🆘 Поддержка",
-    "🏠 В главное меню",
-    "❌ Отменить",
+    "❓ Поддержка",
+    "❌ Отмена",
 ]
 
 
+async def _touch_user(user: types.User) -> None:
+    await db.ensure_exchange_user(
+        telegram_user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
+
+
 def build_reply_main_menu_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = ReplyKeyboardMarkup(
+    return ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="🔄 Обменять"),
-                KeyboardButton(text="💱 Курсы"),
+                KeyboardButton(text="💱 Обмен"),
+                KeyboardButton(text="📊 Курсы"),
+                KeyboardButton(text="📋 Заявки"),
             ],
             [
-                KeyboardButton(text="📜 Мои заявки"),
                 KeyboardButton(text="👤 Профиль"),
-            ],
-            [
-                KeyboardButton(text="❓ FAQ"),
-                KeyboardButton(text="🆘 Поддержка"),
-            ],
-            [
-                KeyboardButton(text="🏠 В главное меню"),
-                KeyboardButton(text="❌ Отменить"),
+                KeyboardButton(text="❓ Поддержка"),
+                KeyboardButton(text="❌ Отмена"),
             ],
         ],
         resize_keyboard=True,
-        one_time_keyboard=False,
+        input_field_placeholder="Выберите раздел...",
     )
-    return keyboard
-
-
-def build_main_menu_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="🔄 Обменять", callback_data="menu_exchange")],
-        [InlineKeyboardButton(text="💱 Курсы", callback_data="menu_rates")],
-        [InlineKeyboardButton(text="📜 Мои заявки", callback_data="menu_orders")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="menu_profile")],
-        [InlineKeyboardButton(text="❓ FAQ", callback_data="menu_faq")],
-        [InlineKeyboardButton(text="🆘 Поддержка", callback_data="menu_support")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def build_exchange_type_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text="Крипта → Крипта", callback_data="exchange_type_crypto_crypto"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Фиат → Крипта", callback_data="exchange_type_fiat_crypto"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Крипта → Фиат", callback_data="exchange_type_crypto_fiat"
-            )
-        ],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="exchange_cancel")],
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Crypto -> Fiat", callback_data=f"exchange:type:{ExchangeType.CRYPTO_TO_FIAT.value}")],
+            [InlineKeyboardButton(text="💵 Fiat -> Crypto", callback_data=f"exchange:type:{ExchangeType.FIAT_TO_CRYPTO.value}")],
+            [InlineKeyboardButton(text="🔄 Crypto -> Crypto", callback_data=f"exchange:type:{ExchangeType.CRYPTO_TO_CRYPTO.value}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="exchange:cancel")],
+        ]
+    )
+
+
+def build_currency_keyboard(currencies: tuple[str, ...], scope: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    for currency in currencies:
+        current_row.append(InlineKeyboardButton(text=currency, callback_data=f"exchange:{scope}:{currency}"))
+        if len(current_row) == 3:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data="exchange:back")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="exchange:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_network_keyboard(exchange_type: str, from_currency: str, to_currency: str) -> InlineKeyboardMarkup:
+    network_currency = get_network_currency(exchange_type, from_currency, to_currency)
+    rows = [
+        [InlineKeyboardButton(text=option["label"], callback_data=f"exchange:network:{option['code']}")]
+        for option in get_network_options(exchange_type, from_currency, to_currency)
     ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def build_currency_keyboard(prefix: str) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    for code in SUPPORTED_CURRENCIES:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=code, callback_data=f"{prefix}_currency_{code}"
-                )
-            ]
-        )
-    rows.append(
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="exchange_back_step")]
-    )
-    rows.append(
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="exchange_cancel")]
-    )
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data="exchange:back")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="exchange:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_to_currency_keyboard(from_currency: str) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    for code in SUPPORTED_CURRENCIES:
-        if code == from_currency:
-            continue
-        rows.append(
+def build_back_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=code, callback_data=f"to_currency_{code}"
-                )
+                InlineKeyboardButton(text="← Назад", callback_data="exchange:back"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="exchange:cancel"),
             ]
-        )
-    rows.append(
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="exchange_back_step")]
+        ]
     )
-    rows.append(
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="exchange_cancel")]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def build_network_keyboard(currency: str) -> InlineKeyboardMarkup:
-    networks = NETWORKS_BY_CURRENCY.get(currency, [])
-    rows: List[List[InlineKeyboardButton]] = []
-    for net in networks:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=net, callback_data=f"network_{net}"
-                )
-            ]
-        )
-    rows.append(
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="exchange_back_step")]
-    )
-    rows.append(
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="exchange_cancel")]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_confirm_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="✅ Подтвердить заявку", callback_data="exchange_confirm_order")],
-        [InlineKeyboardButton(text="✏️ Изменить сумму", callback_data="exchange_edit_amount")],
-        [InlineKeyboardButton(text="✏️ Изменить адрес", callback_data="exchange_edit_address")],
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="exchange_cancel")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="exchange:confirm")],
+            [InlineKeyboardButton(text="✏️ Изменить", callback_data="exchange:edit")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="exchange:cancel")],
+        ]
+    )
 
 
 def build_after_create_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-        [InlineKeyboardButton(text="🔄 Создать обмен", callback_data="menu_exchange")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📋 Мои заявки", callback_data="orders:page:1"),
+                InlineKeyboardButton(text="📊 Курсы", callback_data="menu:rates"),
+            ],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+        ]
+    )
 
 
-def build_rates_menu_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="BTC → USDT", callback_data="rate_BTC_USDT")],
-        [InlineKeyboardButton(text="ETH → USDT", callback_data="rate_ETH_USDT")],
-        [InlineKeyboardButton(text="USDT → BTC", callback_data="rate_USDT_BTC")],
-        [InlineKeyboardButton(text="TON → USDT", callback_data="rate_TON_USDT")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="menu_rates")],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def build_orders_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="🟡 В обработке", callback_data="orders_in_progress")],
-        [InlineKeyboardButton(text="🟢 Завершённые", callback_data="orders_completed")],
-        [InlineKeyboardButton(text="🔴 Отменённые", callback_data="orders_cancelled")],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def build_rates_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="menu:rates")],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
+        ]
+    )
 
 
 def build_profile_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="⭐ Избранные пары", callback_data="profile_favorites")],
-        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="profile_notifications")],
-        [InlineKeyboardButton(text="🌐 Язык", callback_data="profile_language")],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def build_faq_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="Как создать обмен?", callback_data="faq_how_exchange")],
-        [InlineKeyboardButton(text="Сколько идёт перевод?", callback_data="faq_how_long")],
-        [InlineKeyboardButton(text="Какие комиссии?", callback_data="faq_fees")],
-        [InlineKeyboardButton(text="Зачем нужна верификация?", callback_data="faq_kyc")],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
+                InlineKeyboardButton(text="❓ Поддержка", callback_data="menu:support"),
+            ]
+        ]
+    )
 
 
 def build_support_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="✍️ Написать оператору", callback_data="support_write")],
-        [InlineKeyboardButton(text="📨 Отправить ID заявки", callback_data="support_send_id")],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu_main")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="exchange:cancel")]
+        ]
+    )
 
 
-def calculate_exchange(
-    from_currency: str, to_currency: str, amount: float
-) -> Tuple[float, float, float]:
-    base_usd = RATES_USD[from_currency]
-    quote_usd = RATES_USD[to_currency]
-    fee_amount = amount * FEE_PERCENT / 100.0
-    net_amount = amount - fee_amount
-    usd_value = net_amount * base_usd
-    receive_amount = usd_value / quote_usd
-    rate = base_usd / quote_usd
-    return fee_amount, receive_amount, rate
+def build_orders_keyboard(orders: list[dict], page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for order in orders:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{order['order_id']} | {order['from_currency']} -> {order['to_currency']}",
+                    callback_data=f"orders:detail:{order['order_id']}:{page}",
+                )
+            ]
+        )
+
+    navigation_row: list[InlineKeyboardButton] = []
+    if page > 1:
+        navigation_row.append(InlineKeyboardButton(text="← Назад", callback_data=f"orders:page:{page - 1}"))
+    if page < total_pages:
+        navigation_row.append(InlineKeyboardButton(text="Вперёд →", callback_data=f"orders:page:{page + 1}"))
+    if navigation_row:
+        rows.append(navigation_row)
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def generate_order_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
-    return f"EX-{suffix}"
+def build_order_detail_keyboard(page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="← Назад к списку", callback_data=f"orders:page:{page}"),
+                InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
+            ]
+        ]
+    )
 
 
-async def show_main_menu(message: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+async def _apply_message_rate_limit(user_id: int) -> bool:
+    redis_client = get_redis_client()
+    key = f"rate_limit:messages:{user_id}"
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, 60)
+    return current <= 10
+
+
+async def _apply_order_rate_limit(user_id: int) -> bool:
+    redis_client = get_redis_client()
+    key = f"rate_limit:orders:{user_id}"
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, 3600)
+    return current <= 3
+
+
+def _build_main_menu_text() -> str:
+    return "📋 Главное меню\n\nВыберите раздел:"
+
+
+def _build_rates_text() -> str:
+    lines = ["📊 Актуальные курсы (демо)", ""]
+    for base, quote, rate in get_rates_snapshot():
+        lines.append(f"{base} -> {quote}: {format_rate(rate, base, quote)}")
+    lines.extend(
+        [
+            "",
+            "⚠️ Курсы демонстрационные и могут отличаться от реальных.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_amount_prompt(from_currency: str) -> str:
+    return (
+        "💰 Введите сумму для обмена\n\n"
+        f"Минимум: {format_money(settings.min_exchange_amount_rub, 'RUB')}\n"
+        f"Максимум: {format_money(settings.max_exchange_amount_rub, 'RUB')}\n\n"
+        f"Сумма указывается в валюте списания: {from_currency}"
+    )
+
+
+def _build_address_prompt(exchange_type: str, from_currency: str, to_currency: str, network: str) -> str:
+    address_target = to_currency if to_currency != "RUB" else "реквизиты"
+    network_currency = get_network_currency(exchange_type, from_currency, to_currency)
+    network_label = get_network_label(network_currency, network)
+    return (
+        "📍 Введите адрес кошелька или реквизиты для получения средств\n\n"
+        f"Сеть: {network_label}\n"
+        f"Получение: {address_target}"
+    )
+
+
+def _build_order_summary(data: dict) -> str:
+    preview = calculate_order_preview(
+        from_currency=data["from_currency"],
+        to_currency=data["to_currency"],
+        amount=Decimal(data["amount"]),
+    )
+    network_currency = get_network_currency(data["exchange_type"], data["from_currency"], data["to_currency"])
+    network_label = get_network_label(network_currency, data["network"])
+    return (
+        "🧮 Расчёт обмена\n\n"
+        f"Направление: {data['from_currency']} -> {data['to_currency']}\n"
+        f"Тип: {get_exchange_type_label(data['exchange_type'])}\n"
+        f"Сеть: {network_label}\n\n"
+        f"Сумма: {format_money(Decimal(data['amount']), data['from_currency'])}\n"
+        f"Курс: {format_rate(preview['rate'], data['from_currency'], data['to_currency'])}\n"
+        f"К получению до комиссии: {format_money(preview['gross_receive_amount'], data['to_currency'])}\n"
+        f"Комиссия ({settings.default_fee_percent}%): {format_money(preview['fee_amount'], data['to_currency'])}\n"
+        f"Итого: {format_money(preview['receive_amount'], data['to_currency'])}\n\n"
+        f"Адрес / реквизиты:\n{data['address']}\n\n"
+        "⚠️ Курсы действительны 15 минут."
+    )
+
+
+def _build_order_detail_text(order: dict) -> str:
+    return (
+        f"📄 Заявка #{order['order_id']}\n\n"
+        f"Статус: {get_order_status_emoji(order['status'])} {get_order_status_label(order['status'])}\n\n"
+        f"Тип обмена: {get_exchange_type_label(order['exchange_type'])}\n"
+        f"Направление: {order['from_currency']} -> {order['to_currency']}\n"
+        f"Сеть: {order['network']}\n\n"
+        f"Сумма: {format_money(order['amount'], order['from_currency'])}\n"
+        f"Курс: {format_rate(order['rate'], order['from_currency'], order['to_currency'])}\n"
+        f"Комиссия ({order['fee_percent']}%): {format_money(order['fee_amount'], order['to_currency'])}\n"
+        f"К получению: {format_money(order['receive_amount'], order['to_currency'])}\n\n"
+        f"Адрес / реквизиты:\n{order['address']}\n\n"
+        f"Создана: {format_datetime_for_user(order['created_at'])}\n"
+        f"Обновлена: {format_datetime_for_user(order['updated_at'])}"
+    )
+
+
+def _build_orders_list_text(orders: list[dict], page: int, total_pages: int) -> str:
+    if not orders:
+        return "📋 Ваши заявки\n\nПока заявок нет."
+    lines = ["📋 Ваши заявки", ""]
+    for order in orders:
+        lines.extend(
+            [
+                f"#{order['order_id']} | {order['from_currency']} -> {order['to_currency']}",
+                f"Сумма: {format_money(order['amount'], order['from_currency'])} | Статус: {get_order_status_emoji(order['status'])} {get_order_status_label(order['status'])}",
+                format_datetime_for_user(order["created_at"]),
+                "",
+            ]
+        )
+    lines.append(f"Страница {page}/{total_pages}")
+    return "\n".join(lines)
+
+
+def _build_profile_text(user_doc: dict, total_orders: int, active_orders: int, materials_count: int) -> str:
+    username = f"@{user_doc['username']}" if user_doc.get("username") else "-"
+    full_name = " ".join(part for part in [user_doc.get("first_name"), user_doc.get("last_name")] if part) or "-"
+    return (
+        "👤 Профиль пользователя\n\n"
+        f"Telegram ID: {user_doc['telegram_user_id']}\n"
+        f"Username: {username}\n"
+        f"Имя: {full_name}\n\n"
+        f"Первый вход: {format_datetime_for_user(user_doc['first_seen_at'])}\n"
+        f"Последняя активность: {format_datetime_for_user(user_doc['last_activity_at'])}\n\n"
+        f"Заявок всего: {total_orders}\n"
+        f"Активных: {active_orders}\n"
+        f"Отправлено материалов: {materials_count}"
+    )
+
+
+async def show_main_menu(target: types.Message | CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    text = render_screen("main_menu")
-    reply_keyboard = build_reply_main_menu_keyboard()
-    if isinstance(message, types.CallbackQuery):
-        await message.message.edit_text(text)
-        await message.message.answer(text="Меню доступно на клавиатуре ниже.", reply_markup=reply_keyboard)
-    else:
-        await message.answer(text, reply_markup=reply_keyboard)
+    text = _build_main_menu_text()
+    keyboard = build_reply_main_menu_keyboard()
+    if isinstance(target, CallbackQuery):
+        await target.message.answer(text, reply_markup=keyboard)
+        await target.answer()
+        return
+    await target.answer(text, reply_markup=keyboard)
+
+
+async def _show_exchange_type(target: types.Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(ExchangeStates.selecting_type)
+    text = "💱 Оформление заявки\n\nШаг 1. Выберите тип обмена."
+    keyboard = build_exchange_type_keyboard()
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.answer()
+        return
+    await target.answer(text, reply_markup=keyboard)
+
+
+async def _show_from_currency(callback: CallbackQuery, state: FSMContext, exchange_type: str) -> None:
+    await state.set_state(ExchangeStates.selecting_from_currency)
+    await callback.message.edit_text(
+        "Шаг 2. Выберите валюту списания.",
+        reply_markup=build_currency_keyboard(get_available_from_currencies(exchange_type), "from"),
+    )
+
+
+async def _show_to_currency(callback: CallbackQuery, state: FSMContext, exchange_type: str, from_currency: str) -> None:
+    await state.set_state(ExchangeStates.selecting_to_currency)
+    await callback.message.edit_text(
+        "Шаг 3. Выберите валюту получения.",
+        reply_markup=build_currency_keyboard(get_available_to_currencies(exchange_type, from_currency), "to"),
+    )
+
+
+async def _show_network_step(callback: CallbackQuery, state: FSMContext, data: dict) -> None:
+    await state.set_state(ExchangeStates.selecting_network)
+    await callback.message.edit_text(
+        "Шаг 4. Выберите сеть.",
+        reply_markup=build_network_keyboard(data["exchange_type"], data["from_currency"], data["to_currency"]),
+    )
+
+
+async def _show_amount_step(target: types.Message | CallbackQuery, state: FSMContext, from_currency: str) -> None:
+    await state.set_state(ExchangeStates.entering_amount)
+    text = _build_amount_prompt(from_currency)
+    keyboard = build_back_cancel_keyboard()
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.answer()
+        return
+    await target.answer(text, reply_markup=keyboard)
+
+
+async def _show_address_step(target: types.Message | CallbackQuery, state: FSMContext, data: dict) -> None:
+    await state.set_state(ExchangeStates.entering_address)
+    text = _build_address_prompt(data["exchange_type"], data["from_currency"], data["to_currency"], data["network"])
+    keyboard = build_back_cancel_keyboard()
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.answer()
+        return
+    await target.answer(text, reply_markup=keyboard)
+
+
+async def _show_confirmation(target: types.Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(ExchangeStates.confirming)
+    data = await state.get_data()
+    text = _build_order_summary(data)
+    keyboard = build_confirm_keyboard()
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=keyboard)
+        await target.answer()
+        return
+    await target.answer(text, reply_markup=keyboard)
 
 
 @router.message(Command("menu"))
-async def cmd_start_menu(message: types.Message, state: FSMContext) -> None:
-    await show_main_menu(message, state)
-
-
-@router.message(F.text == "🏠 В главное меню")
-async def msg_main_menu_button(message: types.Message, state: FSMContext) -> None:
+async def cmd_menu(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
     await show_main_menu(message, state)
 
 
 @router.message(Command("exchange"))
+@router.message(F.text == "💱 Обмен")
 async def cmd_exchange(message: types.Message, state: FSMContext) -> None:
-    await state.set_state(ExchangeStates.choose_type)
-    text = render_screen("exchange_type")
-    keyboard = build_exchange_type_keyboard()
-    await message.answer(text, reply_markup=keyboard)
-
-
-@router.message(F.text == "🔄 Обменять")
-async def msg_exchange_button(message: types.Message, state: FSMContext) -> None:
-    await cmd_exchange(message, state)
+    await _touch_user(message.from_user)
+    if not await _apply_message_rate_limit(message.from_user.id):
+        await message.answer("Слишком много сообщений. Попробуйте через минуту.")
+        return
+    await _show_exchange_type(message, state)
 
 
 @router.message(Command("rates"))
+@router.message(F.text == "📊 Курсы")
 async def cmd_rates(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
     await state.clear()
-    text = render_screen("rates_menu")
-    keyboard = build_rates_menu_keyboard()
-    await message.answer(text, reply_markup=keyboard)
-
-
-@router.message(F.text == "💱 Курсы")
-async def msg_rates_button(message: types.Message, state: FSMContext) -> None:
-    await cmd_rates(message, state)
+    await message.answer(_build_rates_text(), reply_markup=build_rates_keyboard())
 
 
 @router.message(Command("orders"))
+@router.message(F.text == "📋 Заявки")
 async def cmd_orders(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
     await state.clear()
-    text = render_screen("orders")
-    keyboard = build_orders_keyboard()
-    await message.answer(text, reply_markup=keyboard)
-
-
-@router.message(F.text == "📜 Мои заявки")
-async def msg_orders_button(message: types.Message, state: FSMContext) -> None:
-    await cmd_orders(message, state)
+    orders, total = await db.list_orders_for_user(message.from_user.id, page=1, page_size=10)
+    total_pages = max(ceil(total / 10), 1)
+    await message.answer(
+        _build_orders_list_text(orders, 1, total_pages),
+        reply_markup=build_orders_keyboard(orders, 1, total_pages),
+    )
 
 
 @router.message(Command("profile"))
-async def cmd_profile(message: types.Message, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("profile")
-    keyboard = build_profile_keyboard()
-    await message.answer(text, reply_markup=keyboard)
-
-
 @router.message(F.text == "👤 Профиль")
-async def msg_profile_button(message: types.Message, state: FSMContext) -> None:
-    await cmd_profile(message, state)
+async def cmd_profile(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
+    await state.clear()
+    user_doc = await db.get_exchange_user(message.from_user.id)
+    if not user_doc:
+        await message.answer("Профиль пока не найден. Используйте /start.")
+        return
+    total_orders = await db.count_orders_for_user(message.from_user.id)
+    active_orders = await db.count_active_orders_for_user(message.from_user.id)
+    materials_count = await db.count_materials_for_user(message.from_user.id)
+    await message.answer(
+        _build_profile_text(user_doc, total_orders, active_orders, materials_count),
+        reply_markup=build_profile_keyboard(),
+    )
 
 
 @router.message(Command("support"))
+@router.message(F.text == "❓ Поддержка")
 async def cmd_support(message: types.Message, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("support")
-    keyboard = build_support_keyboard()
-    await message.answer(text, reply_markup=keyboard)
-
-
-@router.message(F.text == "❓ FAQ")
-async def msg_faq_button(message: types.Message, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("faq")
-    keyboard = build_faq_keyboard()
-    await message.answer(text, reply_markup=keyboard)
-
-
-@router.message(F.text == "🆘 Поддержка")
-async def msg_support_button(message: types.Message, state: FSMContext) -> None:
-    await cmd_support(message, state)
+    await _touch_user(message.from_user)
+    await state.set_state(SupportStates.waiting_message)
+    await message.answer(
+        "❓ Поддержка\n\nОпишите ваш вопрос или проблему.\nВы можете отправить текст, фото или документ.\n\nМенеджер ответит в рабочее время (9:00-18:00 МСК).",
+        reply_markup=build_support_keyboard(),
+    )
 
 
 @router.message(Command("cancel"))
+@router.message(F.text == "❌ Отмена")
 async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
     await state.clear()
-    text = render_screen("cancelled")
-    reply_keyboard = build_reply_main_menu_keyboard()
-    await message.answer(text, reply_markup=reply_keyboard)
+    await message.answer("Текущий сценарий отменён. Вы можете начать заново из меню.", reply_markup=build_reply_main_menu_keyboard())
 
 
-@router.message(F.text == "❌ Отменить")
-async def msg_cancel_button(message: types.Message, state: FSMContext) -> None:
-    await cmd_cancel(message, state)
-
-
-@router.callback_query(F.data == "menu_main")
+@router.callback_query(F.data == "menu:main")
 async def cb_menu_main(callback: CallbackQuery, state: FSMContext) -> None:
     await show_main_menu(callback, state)
 
 
-@router.callback_query(F.data == "menu_exchange")
-async def cb_menu_exchange(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ExchangeStates.choose_type)
-    text = render_screen("exchange_type")
-    keyboard = build_exchange_type_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data == "menu_rates")
-async def cb_menu_rates(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "menu:rates")
+async def cb_rates(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    text = render_screen("rates_menu")
-    keyboard = build_rates_menu_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.message.edit_text(_build_rates_text(), reply_markup=build_rates_keyboard())
+    await callback.answer()
 
 
-@router.callback_query(F.data == "menu_orders")
-async def cb_menu_orders(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("orders")
-    keyboard = build_orders_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
+@router.callback_query(F.data == "menu:support")
+async def cb_support(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SupportStates.waiting_message)
+    await callback.message.edit_text(
+        "❓ Поддержка\n\nОпишите ваш вопрос или проблему.\nВы можете отправить текст, фото или документ.\n\nМенеджер ответит в рабочее время (9:00-18:00 МСК).",
+        reply_markup=build_support_keyboard(),
+    )
+    await callback.answer()
 
 
-@router.callback_query(F.data == "menu_profile")
-async def cb_menu_profile(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("profile")
-    keyboard = build_profile_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data == "menu_faq")
-async def cb_menu_faq(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("faq")
-    keyboard = build_faq_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data == "menu_support")
-async def cb_menu_support(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    text = render_screen("support")
-    keyboard = build_support_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data.startswith("exchange_type_"))
+@router.callback_query(F.data.startswith("exchange:type:"))
 async def cb_exchange_type(callback: CallbackQuery, state: FSMContext) -> None:
-    exchange_type = callback.data.replace("exchange_type_", "")
+    exchange_type = callback.data.split(":")[-1]
     await state.update_data(exchange_type=exchange_type)
-    await state.set_state(ExchangeStates.choose_from_currency)
-    text = render_screen("exchange_from_currency")
-    keyboard = build_currency_keyboard(prefix="from")
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await _show_from_currency(callback, state, exchange_type)
+    await callback.answer()
 
 
-@router.callback_query(F.data.startswith("from_currency_"))
+@router.callback_query(F.data.startswith("exchange:from:"))
 async def cb_from_currency(callback: CallbackQuery, state: FSMContext) -> None:
-    currency = callback.data.replace("from_currency_", "")
-    if currency not in SUPPORTED_CURRENCIES:
-        await callback.answer("Неверная валюта", show_alert=True)
+    from_currency = callback.data.split(":")[-1]
+    data = await state.get_data()
+    exchange_type = data["exchange_type"]
+    if from_currency not in get_available_from_currencies(exchange_type):
+        await callback.answer("Неподдерживаемая валюта.", show_alert=True)
         return
-    await state.update_data(from_currency=currency)
-    await state.set_state(ExchangeStates.choose_to_currency)
-    text = render_screen("exchange_to_currency")
-    keyboard = build_to_currency_keyboard(from_currency=currency)
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await state.update_data(from_currency=from_currency)
+    await _show_to_currency(callback, state, exchange_type, from_currency)
+    await callback.answer()
 
 
-@router.callback_query(F.data.startswith("to_currency_"))
+@router.callback_query(F.data.startswith("exchange:to:"))
 async def cb_to_currency(callback: CallbackQuery, state: FSMContext) -> None:
-    currency = callback.data.replace("to_currency_", "")
+    to_currency = callback.data.split(":")[-1]
     data = await state.get_data()
-    from_currency = data.get("from_currency")
-    if not from_currency or currency == from_currency:
-        await callback.answer("Выберите другую валюту", show_alert=True)
+    exchange_type = data["exchange_type"]
+    from_currency = data["from_currency"]
+    if to_currency == from_currency:
+        await callback.answer("Валюта получения должна отличаться.", show_alert=True)
         return
-    if currency not in SUPPORTED_CURRENCIES:
-        await callback.answer("Неверная валюта", show_alert=True)
+    if to_currency not in get_available_to_currencies(exchange_type, from_currency):
+        await callback.answer("Неподдерживаемая валюта.", show_alert=True)
         return
-    await state.update_data(to_currency=currency)
-    await state.set_state(ExchangeStates.choose_network)
-    text = render_screen("exchange_network")
-    keyboard = build_network_keyboard(currency)
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await state.update_data(to_currency=to_currency)
+    await _show_network_step(callback, state, {**data, "to_currency": to_currency})
+    await callback.answer()
 
 
-@router.callback_query(F.data.startswith("network_"))
+@router.callback_query(F.data.startswith("exchange:network:"))
 async def cb_network(callback: CallbackQuery, state: FSMContext) -> None:
-    network = callback.data.replace("network_", "")
+    network = callback.data.split(":")[-1]
     await state.update_data(network=network)
-    await state.set_state(ExchangeStates.enter_amount)
-    text = render_screen("exchange_amount")
-    await callback.message.edit_text(text)
+    data = await state.get_data()
+    await _show_amount_step(callback, state, data["from_currency"])
 
 
-@router.message(ExchangeStates.enter_amount)
+@router.message(ExchangeStates.entering_amount)
 async def handle_amount(message: types.Message, state: FSMContext) -> None:
-    text = message.text or ""
-    try:
-        amount = float(text.replace(",", "."))
-    except ValueError:
-        error_text = render_screen("exchange_amount_error")
-        await message.answer(error_text)
+    if not await _apply_message_rate_limit(message.from_user.id):
+        await message.answer("Слишком много сообщений. Попробуйте через минуту.")
         return
-    if amount < MIN_AMOUNT:
-        error_text = render_screen("exchange_amount_error")
-        await message.answer(error_text)
+    data = await state.get_data()
+    is_valid, error_message, amount = validate_amount(message.text or "", data["from_currency"])
+    if not is_valid or amount is None:
+        await message.answer(error_message)
         return
-    await state.update_data(amount=amount)
-    await state.set_state(ExchangeStates.enter_address)
-    next_text = render_screen("exchange_address")
-    await message.answer(next_text)
+    await state.update_data(amount=str(amount))
+    updated_data = await state.get_data()
+    await _show_address_step(message, state, updated_data)
 
 
-@router.message(ExchangeStates.enter_address)
+@router.message(ExchangeStates.entering_address)
 async def handle_address(message: types.Message, state: FSMContext) -> None:
-    address = (message.text or "").strip()
-    if len(address) < 8:
-        error_text = render_screen("exchange_address_error")
-        await message.answer(error_text)
+    if not await _apply_message_rate_limit(message.from_user.id):
+        await message.answer("Слишком много сообщений. Попробуйте через минуту.")
         return
-    await state.update_data(address=address)
-    await state.set_state(ExchangeStates.confirm)
     data = await state.get_data()
-    from_currency = data["from_currency"]
-    to_currency = data["to_currency"]
-    amount = float(data["amount"])
-    network = data["network"]
-    fee_amount, receive_amount, rate = calculate_exchange(
-        from_currency=from_currency,
-        to_currency=to_currency,
-        amount=amount,
+    is_valid, error_message = validate_address(
+        data["exchange_type"],
+        data["from_currency"],
+        data["to_currency"],
+        data["network"],
+        message.text or "",
     )
-    confirm_text = render_screen(
-        "exchange_confirm",
-        exchange_type=data["exchange_type"],
-        from_currency=from_currency,
-        to_currency=to_currency,
-        network=network,
-        amount=f"{amount:.2f}",
-        fee_amount=f"{fee_amount:.2f}",
-        receive_amount=f"{receive_amount:.2f}",
-        fee_percent=f"{FEE_PERCENT:.2f}",
-        rate=f"{rate:.4f}",
-        address=address,
-    )
-    keyboard = build_confirm_keyboard()
-    await message.answer(confirm_text, reply_markup=keyboard)
+    if not is_valid:
+        await message.answer(error_message)
+        return
+    await state.update_data(address=(message.text or "").strip(), already_created=False)
+    await _show_confirmation(message, state)
 
 
-@router.callback_query(F.data == "exchange_edit_amount")
-async def cb_edit_amount(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ExchangeStates.enter_amount)
-    text = render_screen("exchange_amount")
-    await callback.message.edit_text(text)
-
-
-@router.callback_query(F.data == "exchange_edit_address")
-async def cb_edit_address(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ExchangeStates.enter_address)
-    text = render_screen("exchange_address")
-    await callback.message.edit_text(text)
-
-
-@router.callback_query(F.data == "exchange_confirm_order")
-async def cb_confirm_order(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "exchange:edit")
+async def cb_edit_exchange(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    from_currency = data["from_currency"]
-    to_currency = data["to_currency"]
-    amount = float(data["amount"])
-    network = data["network"]
-    address = data["address"]
-    fee_amount, receive_amount, rate = calculate_exchange(
-        from_currency=from_currency,
-        to_currency=to_currency,
-        amount=amount,
+    await _show_amount_step(callback, state, data["from_currency"])
+
+
+@router.callback_query(F.data == "exchange:confirm")
+async def cb_confirm_exchange(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data:
+        await callback.answer("Сессия истекла. Начните заново.", show_alert=True)
+        return
+    if data.get("already_created"):
+        await callback.answer("Заявка уже создана.", show_alert=True)
+        return
+    if not await _apply_order_rate_limit(callback.from_user.id):
+        await callback.answer("Превышен лимит: не более 3 заявок в час.", show_alert=True)
+        return
+
+    await state.update_data(already_created=True)
+    preview = calculate_order_preview(
+        from_currency=data["from_currency"],
+        to_currency=data["to_currency"],
+        amount=Decimal(data["amount"]),
     )
-    order_id = generate_order_id()
-    await state.clear()
-    text = render_screen(
-        "exchange_created",
+    order_id = await db.get_next_order_id()
+    order = OrderDB(
         order_id=order_id,
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
         exchange_type=data["exchange_type"],
-        from_currency=from_currency,
-        to_currency=to_currency,
-        network=network,
-        amount=f"{amount:.2f}",
-        fee_amount=f"{fee_amount:.2f}",
-        receive_amount=f"{receive_amount:.2f}",
-        fee_percent=f"{FEE_PERCENT:.2f}",
-        rate=f"{rate:.4f}",
-        address=address,
+        from_currency=data["from_currency"],
+        to_currency=data["to_currency"],
+        amount=Decimal(data["amount"]),
+        network=data["network"],
+        address=data["address"],
+        rate=preview["rate"],
+        fee_percent=settings.default_fee_percent,
+        fee_amount=preview["fee_amount"],
+        receive_amount=preview["receive_amount"],
+        is_demo=settings.demo_mode,
     )
-    keyboard = build_after_create_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data == "exchange_cancel")
-async def cb_exchange_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await db.create_order(order)
+    await publish_message(
+        settings.notify_managers_queue_name,
+        {
+            "type": "notify_managers",
+            "event": "new_order",
+            "order_id": order_id,
+            "user_id": callback.from_user.id,
+            "username": callback.from_user.username,
+            "summary": f"Новая заявка: {order.from_currency} -> {order.to_currency}, {format_money(order.amount, order.from_currency)}",
+        },
+    )
     await state.clear()
-    text = render_screen("cancelled")
-    keyboard = build_main_menu_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.message.edit_text(
+        f"✅ Заявка создана!\n\nНомер: #{order_id}\nСтатус: {get_order_status_label('new')}\n\nМенеджер свяжется с вами в ближайшее время.",
+        reply_markup=build_after_create_keyboard(),
+    )
+    await callback.answer()
 
 
-@router.callback_query(F.data == "exchange_back_step")
-async def cb_back_step(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data == "exchange:cancel")
+async def cb_cancel_exchange(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.edit_text("Текущий сценарий отменён.")
+    await callback.message.answer(_build_main_menu_text(), reply_markup=build_reply_main_menu_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "exchange:back")
+async def cb_back_exchange(callback: CallbackQuery, state: FSMContext) -> None:
     current_state = await state.get_state()
     data = await state.get_data()
-    if current_state == ExchangeStates.choose_from_currency:
-        await state.set_state(ExchangeStates.choose_type)
-        text = render_screen("exchange_type")
-        keyboard = build_exchange_type_keyboard()
-        await callback.message.edit_text(text, reply_markup=keyboard)
+    if current_state == ExchangeStates.selecting_from_currency.state:
+        await _show_exchange_type(callback, state)
         return
-    if current_state == ExchangeStates.choose_to_currency:
-        await state.set_state(ExchangeStates.choose_from_currency)
-        text = render_screen("exchange_from_currency")
-        keyboard = build_currency_keyboard(prefix="from")
-        await callback.message.edit_text(text, reply_markup=keyboard)
+    if current_state == ExchangeStates.selecting_to_currency.state:
+        await _show_from_currency(callback, state, data["exchange_type"])
         return
-    if current_state == ExchangeStates.choose_network:
-        from_currency = data.get("from_currency", "")
-        await state.set_state(ExchangeStates.choose_to_currency)
-        text = render_screen("exchange_to_currency")
-        keyboard = build_to_currency_keyboard(from_currency=from_currency)
-        await callback.message.edit_text(text, reply_markup=keyboard)
+    if current_state == ExchangeStates.selecting_network.state:
+        await _show_to_currency(callback, state, data["exchange_type"], data["from_currency"])
         return
-    if current_state in (ExchangeStates.enter_amount, ExchangeStates.enter_address):
-        to_currency = data.get("to_currency", "")
-        await state.set_state(ExchangeStates.choose_network)
-        text = render_screen("exchange_network")
-        keyboard = build_network_keyboard(to_currency)
-        await callback.message.edit_text(text, reply_markup=keyboard)
+    if current_state == ExchangeStates.entering_amount.state:
+        await _show_network_step(callback, state, data)
         return
+    if current_state in (ExchangeStates.entering_address.state, ExchangeStates.confirming.state):
+        await _show_amount_step(callback, state, data["from_currency"])
+        return
+    await show_main_menu(callback, state)
+
+
+@router.callback_query(F.data.startswith("orders:page:"))
+async def cb_orders_page(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    text = render_screen("main_menu")
-    keyboard = build_main_menu_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data.startswith("rate_"))
-async def cb_rate_pair(callback: CallbackQuery, state: FSMContext) -> None:
-    payload = callback.data.replace("rate_", "")
-    try:
-        base, quote = payload.split("_", maxsplit=1)
-    except ValueError:
-        await callback.answer("Неверная пара", show_alert=True)
-        return
-    if base not in RATES_USD or quote not in RATES_USD:
-        await callback.answer("Неверная пара", show_alert=True)
-        return
-    base_usd = RATES_USD[base]
-    quote_usd = RATES_USD[quote]
-    rate = base_usd / quote_usd
-    text = render_screen(
-        "rate_details",
-        pair_label=f"{base} → {quote}",
-        base_currency=base,
-        quote_currency=quote,
-        rate=f"{rate:.4f}",
+    page = int(callback.data.split(":")[-1])
+    orders, total = await db.list_orders_for_user(callback.from_user.id, page=page, page_size=10)
+    total_pages = max(ceil(total / 10), 1)
+    await callback.message.edit_text(
+        _build_orders_list_text(orders, page, total_pages),
+        reply_markup=build_orders_keyboard(orders, page, total_pages),
     )
-    keyboard = build_rates_menu_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
 
 
-@router.callback_query(F.data.startswith("orders_"))
-async def cb_orders_filters(callback: CallbackQuery, state: FSMContext) -> None:
-    text = render_screen("orders")
-    keyboard = build_orders_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data.startswith("profile_"))
-async def cb_profile_filters(callback: CallbackQuery, state: FSMContext) -> None:
-    text = render_screen("profile")
-    keyboard = build_profile_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data.startswith("faq_"))
-async def cb_faq_details(callback: CallbackQuery, state: FSMContext) -> None:
-    text = render_screen("faq")
-    keyboard = build_faq_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@router.callback_query(F.data.startswith("support_"))
-async def cb_support_actions(callback: CallbackQuery, state: FSMContext) -> None:
-    text = render_screen("support")
-    keyboard = build_support_keyboard()
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-async def on_startup(bot: Bot) -> None:
-    logger.info("Crypto exchange bot started")
-
-
-async def on_shutdown(bot: Bot) -> None:
-    await bot.session.close()
-    logger.info("Crypto exchange bot stopped")
-
-
-async def main() -> None:
-    if not settings.telegram_bot_token:
-        logger.critical("TELEGRAM_BOT_TOKEN is not configured")
-        raise SystemExit(1)
-
-    logging.basicConfig(level=logging.INFO)
-
-    bot = Bot(
-        token=settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
-    dp.include_router(router)
-
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Crypto exchange bot stopped by user")
+@router.callback_query(F.data.startswith("orders:detail:"))
+async def cb_order_detail(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    _, _, order_id, page_value = callback.data.split(":")
+    order = await db.get_order_for_user(order_id, callback.from_user.id)
+    if not order:
+        await callback.answer("⛔ Не ваша заявка или она не найдена.", show_alert=True)
+        return
+    await callback.message.edit_text(_build_order_detail_text(order), reply_markup=build_order_detail_keyboard(int(page_value)))
+    await callback.answer()
 

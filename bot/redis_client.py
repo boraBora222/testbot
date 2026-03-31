@@ -1,24 +1,27 @@
 import logging
+import json
 import redis.asyncio as redis
-from .config import settings # Import bot settings
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
-# Global variable for the client instance or pool
-# Consider dependency injection for larger applications
 _redis_pool: redis.ConnectionPool | None = None
 _redis_client: redis.Redis | None = None
+
+
+def get_redis_url() -> str:
+    return settings.redis_url
+
 
 def get_redis_pool() -> redis.ConnectionPool:
     """Initializes and returns the Redis connection pool."""
     global _redis_pool
     if _redis_pool is None:
-        # Важно: Указываем номер базы данных (settings.redis_db) для изоляции инстансов
-        redis_url = f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
-        logger.info(f"Initializing Redis connection pool for bot using URL: {redis_url}")
+        redis_url = get_redis_url()
+        logger.info("Initializing Redis connection pool for bot.")
         _redis_pool = redis.ConnectionPool.from_url(
             redis_url,
-            decode_responses=True # Decode responses to strings
+            decode_responses=True,
         )
     return _redis_pool
 
@@ -30,6 +33,20 @@ def get_redis_client() -> redis.Redis:
         _redis_client = redis.Redis(connection_pool=pool)
         logger.info("Redis client initialized.")
     return _redis_client
+
+
+async def publish_message(queue_name: str, payload: dict) -> None:
+    redis_client = get_redis_client()
+    await redis_client.rpush(queue_name, json.dumps(payload, default=str))
+
+
+async def increment_window_counter(key: str, ttl_seconds: int) -> int:
+    redis_client = get_redis_client()
+    current = await redis_client.incr(key)
+    if current == 1:
+        await redis_client.expire(key, ttl_seconds)
+    return current
+
 
 async def close_redis_pool():
     """Closes the Redis connection pool."""

@@ -79,17 +79,12 @@ async def handle_broadcast(
         return RedirectResponse(url=router.url_path_for("get_users_page"), status_code=303)
 
     try:
-        # Get distinct user IDs from the links collection
-        # Similar aggregation as GET, but only need user_id
-        pipeline = [
-            {"$group": {"_id": "$user_id"}},
-            {"$project": {"_id": 0, "user_id": "$_id"}}
-        ]
-        users_cursor = db.links.aggregate(pipeline)
-        user_ids = [doc["user_id"] async for doc in users_cursor]
+        exchange_user_ids = await db.users.distinct("telegram_user_id")
+        legacy_user_ids = await db.bot_users.distinct("user_id")
+        user_ids = sorted({int(user_id) for user_id in exchange_user_ids + legacy_user_ids if user_id is not None})
 
         if not user_ids:
-            logger.warning("Broadcast attempt with no users found in links collection.")
+            logger.warning("Broadcast attempt with no users found in user collections.")
             # Redirect back, maybe with a message?
             return RedirectResponse(url=router.url_path_for("get_users_page"), status_code=303)
 

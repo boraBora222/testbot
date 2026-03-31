@@ -20,7 +20,7 @@ from .config import settings
 from shared import db
 from . import redis_client # Import redis_client
 # Import routers
-from .routers import applications, links, users # Added users router
+from .routers import applications, links, public, users # Added users router
 from .auth import authenticate_moderator
 # Removed unused service imports
 
@@ -118,6 +118,7 @@ app.mount("/static", StaticFiles(directory="web/static"), name="static")
 app.include_router(links.router) # Include the new links router (usually handles /links)
 app.include_router(users.router) # Include the new users router (handles /users, /users/broadcast)
 app.include_router(applications.router, prefix="/applications") # Include applications under /applications
+app.include_router(public.router)
 
 # Define protected route for OpenAPI schema
 @app.get("/openapi.json", include_in_schema=False) # exclude from schema itself

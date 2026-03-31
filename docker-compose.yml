@@ -60,6 +60,23 @@ services:
     networks:
       - default # Ссылка на статично определенную сеть ниже
 
+  front:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_WEB_BASE_URL: http://localhost:5138
+        VITE_MONGO_DB_NAME: ${MONGO_DB_NAME}
+    container_name: ${BOT_NAME:-bot}_front
+    depends_on:
+      - web
+    ports:
+      - "5138:5138"
+    restart: unless-stopped
+    networks:
+      - default
+
 volumes:
   mongo_data: {} # Статичное имя тома. Docker Compose добавит префикс проекта (bot2_)
 
