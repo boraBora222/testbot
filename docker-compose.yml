@@ -6,12 +6,14 @@ services:
   mongo: # Переименовано с mongodb для краткости
     image: mongo:7
     container_name: ${BOT_NAME:-bot}_mongo # Параметризованное имя контейнера (с дефолтом)
+    ports:
+      - "27017:27017" # Публикация MongoDB на хост
     volumes:
       - mongo_data:/data/db # Ссылка на статично определенный том ниже
     networks:
       - default # Ссылка на статично определенную сеть ниже
     restart: unless-stopped
-    # Внешние порты удалены для изоляции, доступ внутри сети Docker
+    # Mongo доступен с хоста на 27017
 
   redis:
     image: redis:7-alpine

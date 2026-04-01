@@ -1,12 +1,14 @@
 import logging
 from decimal import Decimal
 from math import ceil
+from pathlib import Path
 
 from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -38,6 +40,7 @@ from shared.types.enums import ExchangeType
 
 logger = logging.getLogger(__name__)
 router = Router(name="crypto_exchange")
+CONTRACT_PLACEHOLDER_PATH = Path(__file__).resolve().parent / "assets" / "contract_placeholder.txt"
 
 REPLY_MENU_BUTTONS = [
     "💱 Обмен",
@@ -45,6 +48,8 @@ REPLY_MENU_BUTTONS = [
     "📋 Заявки",
     "👤 Профиль",
     "❓ Поддержка",
+    "🌐 Сайт",
+    "📄 Договор",
     "❌ Отмена",
 ]
 
@@ -69,6 +74,10 @@ def build_reply_main_menu_keyboard() -> ReplyKeyboardMarkup:
             [
                 KeyboardButton(text="👤 Профиль"),
                 KeyboardButton(text="❓ Поддержка"),
+                KeyboardButton(text="🌐 Сайт"),
+            ],
+            [
+                KeyboardButton(text="📄 Договор"),
                 KeyboardButton(text="❌ Отмена"),
             ],
         ],
@@ -163,6 +172,15 @@ def build_profile_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main"),
                 InlineKeyboardButton(text="❓ Поддержка", callback_data="menu:support"),
             ]
+        ]
+    )
+
+
+def build_site_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Открыть сайт", url=settings.front_base_url)],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="menu:main")],
         ]
     )
 
@@ -480,6 +498,28 @@ async def cmd_support(message: types.Message, state: FSMContext) -> None:
     await message.answer(
         "❓ Поддержка\n\nОпишите ваш вопрос или проблему.\nВы можете отправить текст, фото или документ.\n\nМенеджер ответит в рабочее время (9:00-18:00 МСК).",
         reply_markup=build_support_keyboard(),
+    )
+
+
+@router.message(F.text == "🌐 Сайт")
+async def cmd_site(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
+    await state.clear()
+    await message.answer(
+        "🌐 Сайт\n\nНажмите кнопку ниже, чтобы открыть сайт компании.",
+        reply_markup=build_site_keyboard(),
+    )
+
+
+@router.message(F.text == "📄 Договор")
+async def cmd_contract(message: types.Message, state: FSMContext) -> None:
+    await _touch_user(message.from_user)
+    await state.clear()
+    contract_file = FSInputFile(CONTRACT_PLACEHOLDER_PATH, filename="dogovor-placeholder.txt")
+    await message.answer_document(
+        contract_file,
+        caption="📄 Договор\n\nПока отправляем временную заглушку. Позже заменим её документом из БД.",
+        reply_markup=build_reply_main_menu_keyboard(),
     )
 
 

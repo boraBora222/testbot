@@ -1,0 +1,6 @@
+Contract placeholder
+
+This file is a temporary placeholder for the agreement document.
+The production version will be loaded from the database later.
+
+Replace this file after the real contract is available.

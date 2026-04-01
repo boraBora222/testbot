@@ -30,8 +30,9 @@ class AppSettings(BaseSettings):
     order_status_queue_name: str = "bot:order_status"
     notify_managers_queue_name: str = "bot:notify_managers"
 
-    # Web Admin settings for notifications
+    # Web application settings
     web_base_url: str
+    front_base_url: str
 
     # Bot settings
     telegram_bot_token: str
