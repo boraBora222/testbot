@@ -196,3 +196,39 @@ class WebsiteSubmissionDB(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+class WebUserDB(BaseModel):
+    """Website user document for email/password authentication."""
+
+    id: str
+    email: str
+    password_hash: str
+    is_active: bool = True
+    email_verified: bool = False
+    name: str = ""
+    company: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_login_at: Optional[datetime] = None
+    email_verification_code_hash: Optional[str] = None
+    email_verification_code_expires_at: Optional[datetime] = None
+    email_verification_attempts: int = 0
+    password_reset_code_hash: Optional[str] = None
+    password_reset_code_expires_at: Optional[datetime] = None
+    password_reset_attempts: int = 0
+
+    class Config:
+        populate_by_name = True
+
+
+class AuthSessionDB(BaseModel):
+    """Authentication session document for session-based auth."""
+
+    session_id: str
+    user_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+
+    class Config:
+        populate_by_name = True

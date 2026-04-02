@@ -13,6 +13,7 @@ from pymongo import ReturnDocument
 from shared.config import settings
 from shared.models import (
     ApplicationDB,
+    AuthSessionDB,
     BannedUser,
     BotUser,
     ExchangeUserDB,
@@ -20,6 +21,7 @@ from shared.models import (
     MaterialDB,
     OrderDB,
     SupportMessageDB,
+    WebUserDB,
     WebsiteSubmissionDB,
 )
 from shared.types.enums import ApplicationStatus, MaterialContentType, OrderStatus
@@ -460,3 +462,136 @@ async def get_all_known_user_ids() -> list[int]:
     legacy_ids = await database.bot_users.distinct("user_id")
     merged = {int(value) for value in exchange_ids + legacy_ids if value is not None}
     return sorted(merged)
+
+
+# =============================================================================
+# Web User Auth — In-memory storage (temporary, replace with Redis later)
+# =============================================================================
+
+_web_users: dict[str, WebUserDB] = {}
+_auth_sessions: dict[str, AuthSessionDB] = {}
+
+
+async def create_web_user(user: WebUserDB) -> WebUserDB:
+    _web_users[user.email] = user
+    return user
+
+
+async def get_web_user_by_email(email: str) -> Optional[WebUserDB]:
+    return _web_users.get(email.lower())
+
+
+async def get_web_user_by_id(user_id: str) -> Optional[WebUserDB]:
+    for user in _web_users.values():
+        if user.id == user_id:
+            return user
+    return None
+
+
+async def update_web_user_last_login(user_id: str) -> None:
+    now = _utc_now()
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.last_login_at = now
+            user.updated_at = now
+            return
+
+
+async def create_auth_session(session: AuthSessionDB) -> AuthSessionDB:
+    _auth_sessions[session.session_id] = session
+    return session
+
+
+async def get_auth_session(session_id: str) -> Optional[AuthSessionDB]:
+    session = _auth_sessions.get(session_id)
+    if session is None:
+        return None
+    if session.expires_at <= _utc_now():
+        _auth_sessions.pop(session_id, None)
+        return None
+    return session
+
+
+async def delete_auth_session(session_id: str) -> None:
+    _auth_sessions.pop(session_id, None)
+
+
+async def delete_auth_sessions_for_user(user_id: str) -> None:
+    session_ids = [session_id for session_id, session in _auth_sessions.items() if session.user_id == user_id]
+    for session_id in session_ids:
+        _auth_sessions.pop(session_id, None)
+
+
+async def set_email_verification_code(user_id: str, code_hash: str, expires_at: datetime) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.email_verification_code_hash = code_hash
+            user.email_verification_code_expires_at = expires_at
+            user.email_verification_attempts = 0
+            user.updated_at = _utc_now()
+            return
+
+
+async def increment_email_verification_attempts(user_id: str) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.email_verification_attempts += 1
+            user.updated_at = _utc_now()
+            return
+
+
+async def clear_email_verification_code(user_id: str) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.email_verification_code_hash = None
+            user.email_verification_code_expires_at = None
+            user.email_verification_attempts = 0
+            user.updated_at = _utc_now()
+            return
+
+
+async def mark_web_user_email_verified(user_id: str) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.email_verified = True
+            user.email_verification_code_hash = None
+            user.email_verification_code_expires_at = None
+            user.email_verification_attempts = 0
+            user.updated_at = _utc_now()
+            return
+
+
+async def set_password_reset_code(user_id: str, code_hash: str, expires_at: datetime) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.password_reset_code_hash = code_hash
+            user.password_reset_code_expires_at = expires_at
+            user.password_reset_attempts = 0
+            user.updated_at = _utc_now()
+            return
+
+
+async def increment_password_reset_attempts(user_id: str) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.password_reset_attempts += 1
+            user.updated_at = _utc_now()
+            return
+
+
+async def clear_password_reset_code(user_id: str) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.password_reset_code_hash = None
+            user.password_reset_code_expires_at = None
+            user.password_reset_attempts = 0
+            user.updated_at = _utc_now()
+            return
+
+
+async def update_web_user_password_hash(user_id: str, password_hash: str) -> None:
+    for user in _web_users.values():
+        if user.id == user_id:
+            user.password_hash = password_hash
+            user.updated_at = _utc_now()
+            return

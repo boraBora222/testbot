@@ -11,6 +11,10 @@ Components
 * MongoDB: Primary data store.
 * Redis: Queues and ephemeral state.
 
+Authorization rollout reference
+
+See `docs/specifications/authorization_rollout_checklist.md` for the auth verification matrix, rollout readiness checks, and MVP limitations for session storage and throttling.
+
 Requirements
 
 * Docker и Docker Compose

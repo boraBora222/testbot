@@ -12,6 +12,7 @@ python-multipart>=0.0.5 # Required for form data parsing in FastAPI
 python-dotenv>=1.0.0 # Reads key-value pairs from .env file
 pydantic[email]>=2.0.0 # Data validation
 pydantic-settings>=2.0.0 # Settings management based on pydantic
+argon2-cffi # Argon2id password hashing for website auth
 
 # Redis client (supports asyncio)
 redis[hiredis]>=5.0.0 # Add redis client, hiredis for potential performance boost

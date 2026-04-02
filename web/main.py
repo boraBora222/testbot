@@ -1,13 +1,10 @@
-import logging
-import sys
-import uvicorn
-import asyncio # Added asyncio
-import logging
-import sys
-import uvicorn
 import asyncio
+import logging
+import sys
+import uvicorn
 # Removed unused imports: json, Optional, ObjectId, bson_errors, HTTPException, llm_service, application_service, redis_client, ApplicationStatus, ApplicationDB
 from fastapi import FastAPI, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +17,7 @@ from .config import settings
 from shared import db
 from . import redis_client # Import redis_client
 # Import routers
-from .routers import applications, links, public, users # Added users router
+from .routers import applications, auth, links, public, users # Added users router
 from .auth import authenticate_moderator
 # Removed unused service imports
 
@@ -107,6 +104,14 @@ app = FastAPI(
 # dependencies=[Depends(authenticate_moderator)] # REMOVED Global dependency
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.front_base_url],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- Template and Static Files Setup ---
 # Paths are relative to the WORKDIR (/app) inside the container
 templates = Jinja2Templates(directory="web/templates")
@@ -119,6 +124,7 @@ app.include_router(links.router) # Include the new links router (usually handles
 app.include_router(users.router) # Include the new users router (handles /users, /users/broadcast)
 app.include_router(applications.router, prefix="/applications") # Include applications under /applications
 app.include_router(public.router)
+app.include_router(auth.router)
 
 # Define protected route for OpenAPI schema
 @app.get("/openapi.json", include_in_schema=False) # exclude from schema itself
