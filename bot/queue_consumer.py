@@ -6,6 +6,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from shared import db
+from shared.async_tracing import duration_ms, format_async_trace, get_async_trace, utc_now
 from shared.types.enums import OrderStatus
 
 from .config import settings
@@ -16,6 +17,32 @@ from .exchange_logic import (
 from .redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
+
+
+def _should_warn_async_latency(payload: dict, *, stage: str, finished_at=None) -> bool:
+    trace = get_async_trace(payload)
+    latency_ms = duration_ms(trace.get("published_at"), finished_at)
+    if latency_ms is None:
+        return False
+    if stage == "dequeued":
+        return latency_ms >= settings.async_queue_lag_warn_ms
+    return bool(
+        latency_ms >= settings.async_notification_total_warn_ms
+    )
+
+
+def _log_async_stage(payload: dict, *, queue_name: str, stage: str, finished_at=None, recipient_id: int | None = None) -> None:
+    message = format_async_trace(
+        payload,
+        stage=stage,
+        queue_name=queue_name,
+        finished_at=finished_at,
+        recipient_id=recipient_id,
+    )
+    if _should_warn_async_latency(payload, stage=stage, finished_at=finished_at):
+        logger.warning("Async notification timing exceeded threshold. %s", message)
+        return
+    logger.info("Async notification trace. %s", message)
 
 
 async def _send_manager_notification(bot: Bot, payload: dict) -> None:
@@ -65,8 +92,25 @@ async def _send_manager_notification(bot: Bot, payload: dict) -> None:
                 await bot.send_document(chat_id=master_user_id, document=attachment, caption=text)
             else:
                 await bot.send_message(chat_id=master_user_id, text=text)
+            _log_async_stage(
+                payload,
+                queue_name=settings.notify_managers_queue_name,
+                stage="telegram_sent",
+                finished_at=utc_now(),
+                recipient_id=master_user_id,
+            )
         except (TelegramForbiddenError, TelegramBadRequest):
-            logger.exception("Failed to notify manager %s", master_user_id)
+            logger.exception(
+                "Failed to notify manager %s. %s",
+                master_user_id,
+                format_async_trace(
+                    payload,
+                    stage="telegram_failed",
+                    queue_name=settings.notify_managers_queue_name,
+                    finished_at=utc_now(),
+                    recipient_id=master_user_id,
+                ),
+            )
 
 
 async def process_order_status_message(message_data: dict, bot: Bot) -> None:
@@ -93,8 +137,25 @@ async def process_order_status_message(message_data: dict, bot: Bot) -> None:
 
     try:
         await bot.send_message(chat_id=updated_order["user_id"], text=text)
+        _log_async_stage(
+            message_data,
+            queue_name=settings.order_status_queue_name,
+            stage="telegram_sent",
+            finished_at=utc_now(),
+            recipient_id=int(updated_order["user_id"]),
+        )
     except (TelegramForbiddenError, TelegramBadRequest):
-        logger.exception("Failed to send order status update for %s", order_id)
+        logger.exception(
+            "Failed to send order status update for %s. %s",
+            order_id,
+            format_async_trace(
+                message_data,
+                stage="telegram_failed",
+                queue_name=settings.order_status_queue_name,
+                finished_at=utc_now(),
+                recipient_id=int(updated_order["user_id"]),
+            ),
+        )
 
 
 async def process_broadcast_message(message_data: dict, bot: Bot) -> None:
@@ -104,8 +165,24 @@ async def process_broadcast_message(message_data: dict, bot: Bot) -> None:
             logger.warning("Received non-broadcast message in broadcast queue: %s", message_data)
             return
         await bot.send_message(chat_id=message_data["user_id"], text=message_data["text"])
+        _log_async_stage(
+            message_data,
+            queue_name=settings.broadcast_queue_name,
+            stage="telegram_sent",
+            finished_at=utc_now(),
+            recipient_id=int(message_data["user_id"]),
+        )
     except (KeyError, TelegramForbiddenError, TelegramBadRequest):
-        logger.exception("Failed to process broadcast message: %s", message_data)
+        logger.exception(
+            "Failed to process broadcast message: %s. %s",
+            message_data,
+            format_async_trace(
+                message_data,
+                stage="telegram_failed",
+                queue_name=settings.broadcast_queue_name,
+                finished_at=utc_now(),
+            ),
+        )
 
 
 async def process_manager_notification(message_data: dict, bot: Bot) -> None:
@@ -126,6 +203,12 @@ async def _listen_queue(queue_name: str, processor, bot: Bot, queue_label: str) 
                 continue
             _queue, raw_payload = message
             payload = json.loads(raw_payload)
+            _log_async_stage(
+                payload,
+                queue_name=queue_name,
+                stage="dequeued",
+                finished_at=utc_now(),
+            )
             await processor(payload, bot)
             await asyncio.sleep(0.1)
         except RedisConnectionError:

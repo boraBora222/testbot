@@ -55,13 +55,14 @@ async def get_applications_page(request: Request):
 
     # Render the applications.html template
     return templates.TemplateResponse(
-        "applications.html", # Use the renamed template
-        {
+        request=request,
+        name="applications.html", # Use the renamed template
+        context={
             "request": request,
             "applications": all_applications,
             "ApplicationStatus": ApplicationStatus, # Pass enum for use in template
             "page_title": "Заявки пользователей" # Set page title
-        }
+        },
     )
 
 # --- API Endpoints ---

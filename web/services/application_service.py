@@ -5,6 +5,7 @@ from datetime import datetime
 from bson import ObjectId
 
 # Import shared components
+from shared.async_tracing import add_async_trace
 from shared.db import get_applications_collection
 from shared.types.enums import ApplicationStatus
 from web.redis_client import publish_message # Assuming redis client is set up here
@@ -43,6 +44,7 @@ async def _update_application_in_db(
 
 async def _publish_update_event(application_id: str, user_id: int, status: ApplicationStatus, comment: Optional[str]):
     """Internal helper to publish update event to Redis."""
+    queue_name = settings.redis_queue_name or "applications:status_updates"
     message_data = {
         "application_id": application_id,
         "user_id": user_id,
@@ -53,8 +55,14 @@ async def _publish_update_event(application_id: str, user_id: int, status: Appli
         message_data["moderation_comment"] = comment
 
     try:
-        await publish_message(settings.redis_queue_name, json.dumps(message_data))
-        logger.info(f"Published {status.value} event for application {application_id} to Redis queue '{settings.redis_queue_name}'.")
+        traced_payload = add_async_trace(
+            message_data,
+            producer="web.application_service",
+            queue_name=queue_name,
+            event_name=status.value,
+        )
+        await publish_message(queue_name, json.dumps(traced_payload))
+        logger.info(f"Published {status.value} event for application {application_id} to Redis queue '{queue_name}'.")
     except Exception as e:
         logger.exception(f"Failed to publish event for application {application_id} to Redis: {e}")
         # Decide how to handle publish failure - maybe retry later?

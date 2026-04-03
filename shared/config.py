@@ -34,6 +34,16 @@ class AppSettings(BaseSettings):
     web_base_url: str
     front_base_url: str
 
+    # Document storage settings
+    document_storage_endpoint: str = "http://minio:9000"
+    document_storage_public_endpoint: Optional[str] = "http://localhost:9000"
+    document_storage_bucket: str = "documents"
+    document_storage_access_key: str = "minioadmin"
+    document_storage_secret_key: str = "minioadmin123"
+    document_storage_region: str = "us-east-1"
+    document_storage_presign_ttl_seconds: PositiveInt = 15 * 60
+    document_storage_timeout_seconds: PositiveInt = 15
+
     # Bot settings
     telegram_bot_token: str
     master_user_ids: str
@@ -49,6 +59,8 @@ class AppSettings(BaseSettings):
     rates_btc_usdt: Decimal = Decimal("91743.1193")
     rates_eth_usdt: Decimal = Decimal("2702.7027")
     log_level: str = "INFO"
+    async_queue_lag_warn_ms: PositiveInt = 5_000
+    async_notification_total_warn_ms: PositiveInt = 15_000
 
     # Google Gemini API settings (kept for compatibility; optional now)
     google_gemini_api_key: Optional[str] = None

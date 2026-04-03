@@ -51,13 +51,14 @@ async def get_links_page(request: Request, db: Database = Depends(get_db), usern
         logger.info(f"Retrieved {len(links_list)} links from DB. Banned users: {len(banned_ids)}")
 
         return templates.TemplateResponse(
-            "links.html", # New template name
-            {
+            request=request,
+            name="links.html", # New template name
+            context={
                 "request": request,
                 "links": links_list, # Pass the list of LinkDB objects
                 "banned_ids": banned_ids,
                 "page_title": "Присланные материалы" # Set page title
-            }
+            },
         )
     except Exception as e:
         logger.exception("Error fetching or rendering links page.")

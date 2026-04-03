@@ -18,6 +18,8 @@
             {# Use the correct route names defined in the routers #}
             <li><a href="{{ url_for('list_links') }}">Линки</a></li> {# Corrected name #}
             <li><a href="{{ url_for('get_users_page') }}">Пользователи</a></li> {# Corrected name to match router #}
+            <li><a href="{{ url_for('get_pending_whitelist_page') }}">Whitelist</a></li>
+            <li><a href="{{ url_for('get_user_limits_page') }}">Лимиты</a></li>
         </ul>
     </nav>
     <hr> {# Add a horizontal rule for separation #}

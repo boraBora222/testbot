@@ -15,6 +15,18 @@ Authorization rollout reference
 
 See `docs/specifications/authorization_rollout_checklist.md` for the auth verification matrix, rollout readiness checks, and MVP limitations for session storage and throttling.
 
+Client security settings rollout reference
+
+See `docs/specifications/client_security_settings_rollout_checklist.md` for the release checklist covering limits, notifications, whitelist moderation, dashboard, bot, admin, and content synchronization.
+
+Documents and compliance rollout reference
+
+See `docs/specifications/documents_and_compliance_rollout_checklist.md` for the audit matrix, storage validation checks, and release sign-off for profile and deal documents.
+
+Latency and async notifications reference
+
+See `docs/specifications/latency_async_notifications_checklist.md` for the frontend chunk checklist, API latency instrumentation, and Redis/Telegram async notification probes.
+
 Requirements
 
 * Docker и Docker Compose
@@ -87,6 +99,20 @@ Local Development Without Docker (optional)
 
 5. Run the web app:
    `uvicorn web.main:app --host 0.0.0.0 --port 8000 --reload`
+
+### Running tests with `.test-deps`
+
+Use the PowerShell helper instead of calling `pytest.exe` from `.test-deps` directly. The directory is a dependency bundle, not a full virtual environment, so the script injects it into `PYTHONPATH` and runs `python -m pytest`.
+
+```powershell
+.\scripts\test.ps1 -q
+.\scripts\rebuild_test_deps.ps1
+.\scripts\run_pytest.ps1
+.\scripts\run_pytest.ps1 -q
+.\scripts\run_pytest.ps1 tests\test_auth_api.py -q
+```
+
+`.\scripts\test.ps1` is the one-command entrypoint. It rebuilds `.test-deps` only when the dependency bundle is missing or incompatible with the active Python interpreter.
 
 Notes
 
@@ -179,15 +205,17 @@ services:
 
 ## Crypto exchange demo menu
 
-The bot also exposes a demo crypto exchange menu implemented with Aiogram 3 FSM and Jinja2 templates (no real payments or DB):
+The bot also exposes a crypto exchange flow implemented with Aiogram 3 FSM and backed by the repository services for profiles, whitelist moderation, drafts, and order storage (still no real payments):
 
 - Main commands:
   - `/menu` — open the crypto exchange main menu.
-  - `/exchange` — start the step-by-step exchange scenario.
+  - `/exchange` — start the step-by-step exchange scenario with active whitelist selection.
   - `/rates` — view test rates for popular pairs.
-  - `/orders` — stub screen for user orders.
-  - `/profile` — static profile screen with limits.
-  - `/support` — static support screen (`@your_support` placeholder).
+  - `/orders` — view persisted user orders and their statuses.
+  - `/profile` — live profile screen with daily and monthly limits, usage, and remaining balance.
+  - `/support` — support entry that accepts text, photos, and documents for manager follow-up.
   - `/cancel` — cancel the current FSM scenario and return to the main menu.
+
+Manual wallet entry in `/exchange` is used only to submit a new whitelist address for moderation. Order creation remains available only for addresses in the active whitelist.
 
 The menu is registered in the main bot entrypoint (`python -m bot.main`), so it works both in normal and hot-reload dev mode.

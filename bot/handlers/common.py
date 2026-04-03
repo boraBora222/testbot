@@ -10,6 +10,7 @@ from bot.crypto_exchange_bot import REPLY_MENU_BUTTONS, build_reply_main_menu_ke
 from bot.redis_client import increment_window_counter, publish_message
 from bot.states import SupportStates
 from shared import db
+from shared.async_tracing import add_async_trace, format_async_trace
 from shared.config import settings
 from shared.models import MaterialDB, SupportMessageDB
 from shared.types.enums import MaterialContentType
@@ -33,7 +34,21 @@ async def _ensure_known_user(message: types.Message) -> None:
 
 
 async def _enqueue_manager_notification(payload: dict) -> None:
-    await publish_message(settings.notify_managers_queue_name, payload)
+    traced_payload = add_async_trace(
+        payload,
+        producer="bot.handlers.common",
+        queue_name=settings.notify_managers_queue_name,
+        event_name=str(payload.get("event") or payload.get("type") or "manager_notification"),
+    )
+    logger.info(
+        "Queued manager notification. %s",
+        format_async_trace(
+            traced_payload,
+            stage="queued",
+            queue_name=settings.notify_managers_queue_name,
+        ),
+    )
+    await publish_message(settings.notify_managers_queue_name, traced_payload)
 
 
 async def _save_material(
@@ -206,7 +221,7 @@ async def handle_broadcast(message: types.Message, bot: Bot) -> None:
     await message.answer(f"Рассылка завершена. Отправлено: {sent_count}, ошибок: {failed_count}.")
 
 
-@router.message(StateFilter(SupportStates.waiting_message), F.text)
+@router.message(StateFilter(SupportStates.waiting_message), F.text & ~F.text.in_(REPLY_MENU_BUTTONS))
 async def handle_support_text(message: types.Message, state: FSMContext) -> None:
     if not await _apply_message_rate_limit(message.from_user.id):
         await message.answer("Слишком много сообщений. Попробуйте через минуту.")

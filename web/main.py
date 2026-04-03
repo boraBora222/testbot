@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import sys
+from time import perf_counter
+from uuid import uuid4
 import uvicorn
 # Removed unused imports: json, Optional, ObjectId, bson_errors, HTTPException, llm_service, application_service, redis_client, ApplicationStatus, ApplicationDB
 from fastapi import FastAPI, Depends, Request
@@ -17,7 +19,7 @@ from .config import settings
 from shared import db
 from . import redis_client # Import redis_client
 # Import routers
-from .routers import applications, auth, links, public, users # Added users router
+from .routers import applications, auth, deals, links, orders, profile, public, users # Added users router
 from .auth import authenticate_moderator
 # Removed unused service imports
 
@@ -112,6 +114,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_request_timing_headers(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or uuid4().hex[:12]
+    started_at = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.exception(
+            "HTTP %s %s failed in %.2fms request_id=%s",
+            request.method,
+            request.url.path,
+            duration_ms,
+            request_id,
+        )
+        raise
+
+    duration_ms = (perf_counter() - started_at) * 1000
+    response.headers["X-Request-Id"] = request_id
+    response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
+
+    if request.url.path.startswith(("/api/", "/auth/", "/public/")):
+        logger.info(
+            "HTTP %s %s -> %s in %.2fms request_id=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            request_id,
+        )
+    return response
+
 # --- Template and Static Files Setup ---
 # Paths are relative to the WORKDIR (/app) inside the container
 templates = Jinja2Templates(directory="web/templates")
@@ -123,6 +157,9 @@ app.mount("/static", StaticFiles(directory="web/static"), name="static")
 app.include_router(links.router) # Include the new links router (usually handles /links)
 app.include_router(users.router) # Include the new users router (handles /users, /users/broadcast)
 app.include_router(applications.router, prefix="/applications") # Include applications under /applications
+app.include_router(orders.router)
+app.include_router(deals.router)
+app.include_router(profile.router)
 app.include_router(public.router)
 app.include_router(auth.router)
 

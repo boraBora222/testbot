@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Лимиты Пользователей</h1>
+
+{% if message %}
+    <p style="color: green;">{{ message }}</p>
+{% endif %}
+{% if error %}
+    <p style="color: red;">{{ error }}</p>
+{% endif %}
+
+<h2>Текущие лимиты</h2>
+{% if rows %}
+    <table border="1" style="width:100%; border-collapse: collapse;">
+        <thead>
+            <tr>
+                <th>User ID</th>
+                <th>Пользователь</th>
+                <th>Текущая квота</th>
+                <th>Изменить</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            {% set user = row.user %}
+            {% set quota = row.quota %}
+            <tr>
+                <td>{{ user.telegram_user_id }}</td>
+                <td>
+                    {% if user.username %}@{{ user.username }}{% endif %}
+                    {{ user.first_name | default('', true) }}
+                </td>
+                <td>
+                    {% if quota %}
+                        <div>Уровень: {{ quota.verification_level }}</div>
+                        <div>День: {{ format_decimal(quota.daily_limit) }} / использовано {{ format_decimal(quota.daily_used) }}</div>
+                        <div>Месяц: {{ format_decimal(quota.monthly_limit) }} / использовано {{ format_decimal(quota.monthly_used) }}</div>
+                        <div>Daily reset: {{ quota.daily_reset_at.strftime('%Y-%m-%d %H:%M:%S') if quota.daily_reset_at else '-' }} UTC</div>
+                        <div>Monthly reset: {{ quota.monthly_reset_at.strftime('%Y-%m-%d %H:%M:%S') if quota.monthly_reset_at else '-' }} UTC</div>
+                    {% else %}
+                        <div>Квота ещё не настроена.</div>
+                    {% endif %}
+                </td>
+                <td>
+                    <form action="{{ url_for('save_user_limits', user_id=user.telegram_user_id) }}" method="post">
+                        <div style="margin-bottom: 8px;">
+                            <label>Verification level</label>
+                            <select name="verification_level" required>
+                                {% for level in verification_levels %}
+                                <option value="{{ level.value }}" {% if quota and quota.verification_level == level.value %}selected{% elif not quota and level.value == 'basic' %}selected{% endif %}>
+                                    {{ level.value }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <label>Daily limit</label>
+                            <input
+                                type="text"
+                                name="daily_limit"
+                                value="{{ format_decimal(quota.daily_limit) if quota else '' }}"
+                                placeholder="1000000"
+                                required
+                            >
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <label>Monthly limit</label>
+                            <input
+                                type="text"
+                                name="monthly_limit"
+                                value="{{ format_decimal(quota.monthly_limit) if quota else '' }}"
+                                placeholder="50000000"
+                                required
+                            >
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <label>Reason</label>
+                            <input type="text" name="reason" placeholder="Причина изменения" required style="width: 220px;">
+                        </div>
+                        <button type="submit">Сохранить</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>Нет пользователей для редактирования лимитов.</p>
+{% endif %}
+
+<h2>История изменений</h2>
+{% if history %}
+    <table border="1" style="width:100%; border-collapse: collapse;">
+        <thead>
+            <tr>
+                <th>Время</th>
+                <th>User ID</th>
+                <th>Поле</th>
+                <th>Старое значение</th>
+                <th>Новое значение</th>
+                <th>Кто изменил</th>
+                <th>Причина</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in history %}
+            <tr>
+                <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else '-' }} UTC</td>
+                <td>{{ item.user_id }}</td>
+                <td>{{ item.field }}</td>
+                <td>{{ item.old_value | default('-', true) }}</td>
+                <td>{{ item.new_value | default('-', true) }}</td>
+                <td>{{ item.changed_by }}</td>
+                <td>{{ item.reason }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>История изменений пока пуста.</p>
+{% endif %}
+{% endblock %}
