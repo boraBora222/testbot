@@ -1,9 +1,11 @@
 import os
 from pathlib import Path
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +77,22 @@ def client_factory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[], Tes
 def app_client(client_factory: Callable[[], TestClient]) -> Iterator[TestClient]:
     client = client_factory()
     yield client
+
+
+@pytest.fixture
+def auth_app() -> FastAPI:
+    from web.routers.auth import router as auth_router
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    return app
+
+
+@pytest.fixture
+async def auth_async_client(auth_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    transport = httpx.ASGITransport(app=auth_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
 
 
 @pytest.fixture

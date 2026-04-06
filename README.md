@@ -6,7 +6,7 @@ This repository contains a Telegram bot and a small web admin interface for mana
 
 Components
 
-* Bot (aiogram 3.x, polling): Handles Telegram interactions, queues and notifications using aiogram 3.x in polling mode.
+* Bot (aiogram 3.x, polling/webhook): Handles Telegram interactions, queues, notifications, and can run either in polling mode or behind a Telegram webhook.
 * Web (FastAPI): Provides an admin interface with authentication and basic pages.
 * MongoDB: Primary data store.
 * Redis: Queues and ephemeral state.
@@ -48,6 +48,8 @@ Environment Configuration
 
 * BOT_NAME
 * TELEGRAM_BOT_TOKEN
+* TELEGRAM_BOT_MODE (`polling` or `webhook`)
+* TELEGRAM_WEBHOOK_SECRET (required when `TELEGRAM_BOT_MODE=webhook`)
 * TARGET_CHAT_ID (опционально)
 * WEB_PORT
 * WEB_APP_HOST
@@ -62,6 +64,7 @@ Environment Configuration
 * AUTO_MODERATION_DAILY_LIMIT
 * AUTO_MODERATION_PROMPT
 * WEB_BASE_URL
+* FRONT_BASE_URL
 * MASTER_USER_IDS
 * BROADCAST_QUEUE_NAME
 
@@ -81,6 +84,24 @@ Running with Docker
 3. Access web interface
    [http://localhost:WEB_PORT](http://localhost:WEB_PORT)
 
+Telegram webhook mode
+
+When `TELEGRAM_BOT_MODE=webhook`, the bot serves an internal HTTP endpoint on `/telegram/webhook` and the existing `front` Caddy instance proxies that path to the bot container. This keeps the website and the Telegram webhook on the same public domain.
+
+Requirements for webhook mode:
+
+* `FRONT_BASE_URL` must be the real public `https://` URL that already exposes the website.
+* `TELEGRAM_WEBHOOK_SECRET` must be a strong random secret.
+* Telegram must be able to reach `<FRONT_BASE_URL>/telegram/webhook` over HTTPS.
+
+Example:
+
+```env
+TELEGRAM_BOT_MODE=webhook
+TELEGRAM_WEBHOOK_SECRET=replace-with-a-long-random-secret
+FRONT_BASE_URL=https://your-public-site.example
+```
+
 Local Development Without Docker (optional)
 
 1. Create a virtual environment and install dependencies:
@@ -96,6 +117,8 @@ Local Development Without Docker (optional)
 
 4. Run the bot (prod-like, no hot reload):
    `python -m bot.main`
+
+   The same command supports both polling and webhook modes. The mode is selected only through `TELEGRAM_BOT_MODE`.
 
 5. Run the web app:
    `uvicorn web.main:app --host 0.0.0.0 --port 8000 --reload`

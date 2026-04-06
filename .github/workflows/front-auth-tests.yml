@@ -1,0 +1,139 @@
+name: Frontend Auth Tests
+
+on:
+  push:
+    paths:
+      - '.github/workflows/front-auth-tests.yml'
+      - 'docker-compose.yml'
+      - 'front/**'
+      - 'docs/front change/testfront.md'
+  pull_request:
+    paths:
+      - '.github/workflows/front-auth-tests.yml'
+      - 'docker-compose.yml'
+      - 'front/**'
+      - 'docs/front change/testfront.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  auth-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare CI env file
+        shell: pwsh
+        run: |
+          @'
+          BOT_NAME=reply_bot_ci
+          TELEGRAM_BOT_TOKEN=000000:ci-placeholder
+          MONGO_URI=mongodb://mongo:27017/
+          MONGO_DB_NAME=reply_db
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          REDIS_DB=1
+          BROADCAST_QUEUE_NAME=reply_bot_broadcast_queue
+          ORDER_STATUS_QUEUE_NAME=bot:order_status
+          NOTIFY_MANAGERS_QUEUE_NAME=bot:notify_managers
+          WEB_PORT=8071
+          WEB_USERNAME=admin
+          WEB_PASSWORD=password
+          WEB_BASE_URL=http://localhost:8071
+          FRONT_BASE_URL=http://localhost:5138
+          DOCUMENT_STORAGE_ENDPOINT=http://minio:9000
+          DOCUMENT_STORAGE_PUBLIC_ENDPOINT=http://localhost:9000
+          DOCUMENT_STORAGE_BUCKET=documents
+          DOCUMENT_STORAGE_ACCESS_KEY=minioadmin
+          DOCUMENT_STORAGE_SECRET_KEY=minioadmin123
+          DOCUMENT_STORAGE_REGION=us-east-1
+          DOCUMENT_STORAGE_PRESIGN_TTL_SECONDS=900
+          DOCUMENT_STORAGE_TIMEOUT_SECONDS=15
+          MINIO_PORT=9000
+          MINIO_CONSOLE_PORT=9001
+          AUTH_COOKIE_NAME=cryptodeal_session
+          AUTH_SESSION_TTL_HOURS=24
+          AUTH_COOKIE_SECURE=false
+          AUTH_COOKIE_SAMESITE=lax
+          AUTH_PASSWORD_MIN_LENGTH=8
+          AUTH_VERIFICATION_CODE_TTL_MINUTES=10
+          AUTH_RESET_CODE_TTL_MINUTES=10
+          AUTH_VERIFICATION_CODE_LENGTH=6
+          AUTH_RESET_CODE_LENGTH=6
+          AUTH_MAX_CODE_ATTEMPTS=5
+          SMTP_HOST=
+          SMTP_PORT=587
+          SMTP_USERNAME=
+          SMTP_PASSWORD=
+          SMTP_FROM_EMAIL=
+          SMTP_USE_TLS=true
+          MASTER_USER_IDS=12345678
+          DEMO_MODE=true
+          DEFAULT_FEE_PERCENT=0.5
+          MIN_EXCHANGE_AMOUNT_RUB=10000
+          MAX_EXCHANGE_AMOUNT_RUB=10000000
+          FSM_TIMEOUT_MINUTES=30
+          RATES_USDT_RUB=92.5000
+          RATES_BTC_RUB=8500000.0000
+          RATES_ETH_RUB=250000.0000
+          RATES_USDT_BTC=0.0000109
+          RATES_BTC_USDT=91743.1193
+          RATES_ETH_USDT=2702.7027
+          LOG_LEVEL=INFO
+          '@ | Set-Content -Path .env.ci -NoNewline
+
+      - name: Run frontend auth tests in Docker
+        shell: pwsh
+        run: |
+          docker compose -p frontend-auth-ci --env-file .env.ci --profile test run --rm --build front-test
+
+      - name: Start frontend smoke stack
+        shell: pwsh
+        run: |
+          docker compose -p frontend-auth-ci --env-file .env.ci up -d --build mongo redis minio minio-setup web front
+
+      - name: Wait for frontend and API
+        shell: pwsh
+        run: |
+          $urls = @(
+            'http://localhost:8071/openapi.json',
+            'http://localhost:5138'
+          )
+
+          foreach ($url in $urls) {
+            $ready = $false
+
+            for ($attempt = 1; $attempt -le 30; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri $url -UseBasicParsing | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 5
+              }
+            }
+
+            if (-not $ready) {
+              throw "Timed out waiting for $url"
+            }
+          }
+
+      - name: Run frontend smoke tests in Docker
+        shell: pwsh
+        run: |
+          docker compose -p frontend-auth-ci --env-file .env.ci --profile test run --rm --build front-smoke
+
+      - name: Show Docker Compose logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          docker compose -p frontend-auth-ci --env-file .env.ci logs --no-color
+
+      - name: Stop Docker Compose stack
+        if: always()
+        shell: pwsh
+        run: |
+          docker compose -p frontend-auth-ci --env-file .env.ci down --volumes --remove-orphans

@@ -1,6 +1,6 @@
 import logging
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, PositiveInt
 
@@ -46,6 +46,8 @@ class AppSettings(BaseSettings):
 
     # Bot settings
     telegram_bot_token: str
+    telegram_bot_mode: Literal["polling", "webhook"] = "polling"
+    telegram_webhook_secret: Optional[str] = None
     master_user_ids: str
     demo_mode: bool = True
     default_fee_percent: Decimal = Decimal("0.5")
@@ -87,6 +89,29 @@ class AppSettings(BaseSettings):
             if candidate.isdigit():
                 result.append(int(candidate))
         return result
+
+    @property
+    def telegram_webhook_path(self) -> str:
+        return "/telegram/webhook"
+
+    @property
+    def telegram_webhook_url(self) -> str:
+        if self.telegram_bot_mode != "webhook":
+            raise ValueError("TELEGRAM_WEBHOOK_URL is available only in webhook mode.")
+        normalized_front_base_url = self.front_base_url.strip()
+        if not normalized_front_base_url:
+            raise ValueError("FRONT_BASE_URL is required in webhook mode.")
+        if not normalized_front_base_url.startswith("https://"):
+            raise ValueError("FRONT_BASE_URL must use https:// in webhook mode.")
+        return f"{normalized_front_base_url.rstrip('/')}{self.telegram_webhook_path}"
+
+    def validate_telegram_webhook_settings(self) -> None:
+        if self.telegram_bot_mode != "webhook":
+            return
+        webhook_secret = self.telegram_webhook_secret
+        if webhook_secret is None or not webhook_secret.strip():
+            raise ValueError("TELEGRAM_WEBHOOK_SECRET is required in webhook mode.")
+        _ = self.telegram_webhook_url
 
 
 # Instantiate the settings

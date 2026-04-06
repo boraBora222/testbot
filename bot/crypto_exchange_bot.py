@@ -13,7 +13,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
-    WebAppInfo,
 )
 from .config import settings
 from .exchange_logic import (
@@ -111,8 +110,6 @@ async def _touch_user(user: types.User) -> None:
 
 
 def build_site_menu_button() -> KeyboardButton:
-    if settings.front_base_url.startswith("https://"):
-        return KeyboardButton(text="🌐 Сайт", web_app=WebAppInfo(url=settings.front_base_url))
     return KeyboardButton(text="🌐 Сайт")
 
 

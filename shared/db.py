@@ -1091,7 +1091,7 @@ _auth_sessions: dict[str, AuthSessionDB] = {}
 
 
 async def create_web_user(user: WebUserDB) -> WebUserDB:
-    _web_users[user.email] = user
+    _web_users[user.email.lower()] = user
     return user
 
 

@@ -103,6 +103,26 @@ services:
       - ./shared:/app/shared
     networks:
       - default # Ссылка на статично определенную сеть ниже
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys
+          import urllib.request
+          import urllib.error
+          try:
+              with urllib.request.urlopen("http://localhost:8000/openapi.json", timeout=5) as response:
+                  sys.exit(0 if response.status in (200, 401) else 1)
+          except urllib.error.HTTPError as error:
+              sys.exit(0 if error.code == 401 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   front:
     build:
@@ -114,10 +134,57 @@ services:
         VITE_MONGO_DB_NAME: ${MONGO_DB_NAME}
     container_name: ${BOT_NAME:-bot}_front
     depends_on:
-      - web
+      web:
+        condition: service_healthy
     ports:
       - "5138:5138"
     restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://localhost:5138 >/dev/null 2>&1 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  front-test:
+    profiles:
+      - test
+    build:
+      context: ./front
+      dockerfile: Dockerfile.test
+    container_name: ${BOT_NAME:-bot}_front_test
+    command: npm run test:auth
+    networks:
+      - default
+
+  backend-test:
+    profiles:
+      - test
+    build:
+      context: .
+      dockerfile: web/Dockerfile.test
+    container_name: ${BOT_NAME:-bot}_backend_test
+    command: pytest tests/unit/web/test_auth_utils.py tests/unit/shared/test_auth_storage.py tests/component/web/test_auth_router.py tests/integration/web/test_auth_app_integration.py
+    networks:
+      - default
+
+  front-smoke:
+    profiles:
+      - test
+    build:
+      context: ./front
+      dockerfile: Dockerfile.test
+    container_name: ${BOT_NAME:-bot}_front_smoke
+    depends_on:
+      front:
+        condition: service_healthy
+    environment:
+      SMOKE_BASE_URL: http://front:5138
+    command: npm run test:smoke
     networks:
       - default
 
