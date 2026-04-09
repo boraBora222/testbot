@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import redis.asyncio as redis
 
-from shared.async_tracing import add_async_trace, get_async_trace
+from shared.async_tracing import build_async_message, get_async_trace, get_async_version
 from shared.config import settings
 
 
@@ -26,8 +26,13 @@ def parse_args() -> argparse.Namespace:
         default="support_message",
         help="Manager notification event type.",
     )
-    parser.add_argument("--trace-id", default=None, help="Optional trace id override.")
+    parser.add_argument("--correlation-id", default=None, help="Optional correlation id override.")
+    parser.add_argument("--trace-id", default=None, help="Legacy alias for --correlation-id.")
     return parser.parse_args()
+
+
+def _resolve_correlation_id(args: argparse.Namespace) -> str | None:
+    return args.correlation_id or args.trace_id
 
 
 def build_payload(args: argparse.Namespace) -> tuple[str, dict]:
@@ -38,12 +43,12 @@ def build_payload(args: argparse.Namespace) -> tuple[str, dict]:
             "user_id": args.user_id,
             "text": args.text,
         }
-        return queue_name, add_async_trace(
+        return queue_name, build_async_message(
             payload,
             producer="scripts.test_redis_events",
             queue_name=queue_name,
             event_name="broadcast",
-            trace_id=args.trace_id,
+            correlation_id=_resolve_correlation_id(args),
         )
 
     if args.kind == "order-status":
@@ -56,12 +61,12 @@ def build_payload(args: argparse.Namespace) -> tuple[str, dict]:
             "reason": "Latency probe advanced the order.",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        return queue_name, add_async_trace(
+        return queue_name, build_async_message(
             payload,
             producer="scripts.test_redis_events",
             queue_name=queue_name,
             event_name="order_status_change",
-            trace_id=args.trace_id,
+            correlation_id=_resolve_correlation_id(args),
         )
 
     queue_name = settings.notify_managers_queue_name
@@ -78,12 +83,12 @@ def build_payload(args: argparse.Namespace) -> tuple[str, dict]:
     else:
         payload["content_type"] = "text"
 
-    return queue_name, add_async_trace(
+    return queue_name, build_async_message(
         payload,
         producer="scripts.test_redis_events",
         queue_name=queue_name,
         event_name=args.manager_event,
-        trace_id=args.trace_id,
+        correlation_id=_resolve_correlation_id(args),
     )
 
 
@@ -95,7 +100,8 @@ async def send_probe(args: argparse.Namespace) -> None:
         trace = get_async_trace(payload)
         print(
             f"Queued probe to {queue_name}. "
-            f"kind={args.kind} trace_id={trace.get('trace_id')} published_at={trace.get('published_at')}"
+            f"kind={args.kind} version={get_async_version(payload) or 'legacy'} "
+            f"correlation_id={trace.get('correlation_id')} published_at={trace.get('published_at')}"
         )
     finally:
         await client.close()

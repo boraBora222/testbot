@@ -6,6 +6,10 @@ services:
   mongo: # Переименовано с mongodb для краткости
     image: mongo:7
     container_name: ${BOT_NAME:-bot}_mongo # Параметризованное имя контейнера (с дефолтом)
+    command: ["mongod", "--bind_ip_all", "--auth"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     ports:
       - "27017:27017" # Публикация MongoDB на хост
     volumes:
@@ -161,6 +165,17 @@ services:
     networks:
       - default
 
+  front-dashboard-orders-test:
+    profiles:
+      - test
+    build:
+      context: ./front
+      dockerfile: Dockerfile.test
+    container_name: ${BOT_NAME:-bot}_front_dashboard_orders_test
+    command: npm run test:dashboard-orders
+    networks:
+      - default
+
   backend-test:
     profiles:
       - test
@@ -168,7 +183,7 @@ services:
       context: .
       dockerfile: web/Dockerfile.test
     container_name: ${BOT_NAME:-bot}_backend_test
-    command: pytest tests/unit/web/test_auth_utils.py tests/unit/shared/test_auth_storage.py tests/component/web/test_auth_router.py tests/integration/web/test_auth_app_integration.py
+    command: pytest tests/unit/web/test_auth_utils.py tests/unit/shared/test_auth_storage.py tests/component/web/test_auth_router.py tests/integration/web/test_auth_app_integration.py tests/test_orders_api.py tests/test_order_lifecycle.py tests/test_security_settings_service.py tests/test_profile_api.py tests/test_deal_documents_api.py tests/test_users_admin.py
     networks:
       - default
 

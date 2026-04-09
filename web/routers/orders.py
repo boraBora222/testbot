@@ -5,17 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from shared import db
 from shared.models import WebUserDB
-from shared.services.order_lifecycle import (
-    build_order_detail_payload,
-    build_order_draft,
-    build_repeat_seed,
-    get_status_filter_values,
-)
-from shared.services.security_settings import (
-    LimitQuotaNotConfiguredError,
-    WhitelistApprovalRequiredError,
-    create_order_with_security_checks,
-)
+from shared.services import order_service, profile_service
 from shared.types.enums import OrderCreatedFrom, OrderListFilter
 from web.auth import get_current_user
 from web.models import (
@@ -31,6 +21,13 @@ from web.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Orders"])
+build_order_detail_payload = order_service.build_order_detail_payload
+build_order_draft = order_service.build_order_draft
+build_repeat_seed = order_service.build_repeat_seed
+get_status_filter_values = order_service.get_status_filter_values
+create_order_with_security_checks = profile_service.create_order_with_security_checks
+WhitelistApprovalRequiredError = profile_service.WhitelistApprovalRequiredError
+LimitQuotaNotConfiguredError = profile_service.LimitQuotaNotConfiguredError
 
 
 def _format_decimal(value: Decimal) -> str:
@@ -147,7 +144,16 @@ async def repeat_order(order_id: str, current_user: WebUserDB = Depends(get_curr
     order = await db.get_order_for_user(order_id, exchange_user_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
-    return RepeatOrderResponse(prefill_payload=build_repeat_seed(order))
+    try:
+        return RepeatOrderResponse(prefill_payload=build_repeat_seed(order))
+    except ValueError as exc:
+        logger.error(
+            "Repeat order rejected. user_id=%s order_id=%s detail=%s",
+            exchange_user_id,
+            order_id,
+            str(exc),
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/order-drafts/current", response_model=CurrentOrderDraftResponse)
@@ -204,10 +210,31 @@ async def submit_current_order_draft(current_user: WebUserDB = Depends(get_curre
             source_draft_id=draft["draft_id"],
         )
     except WhitelistApprovalRequiredError as exc:
+        logger.error(
+            "Draft submit rejected because whitelist approval is required. web_user_id=%s exchange_user_id=%s draft_id=%s detail=%s",
+            current_user.id,
+            exchange_user_id,
+            draft["draft_id"],
+            str(exc),
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except LimitQuotaNotConfiguredError as exc:
+        logger.error(
+            "Draft submit rejected because quota validation failed. web_user_id=%s exchange_user_id=%s draft_id=%s detail=%s",
+            current_user.id,
+            exchange_user_id,
+            draft["draft_id"],
+            str(exc),
+        )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
+        logger.error(
+            "Draft submit rejected because payload validation failed. web_user_id=%s exchange_user_id=%s draft_id=%s detail=%s",
+            current_user.id,
+            exchange_user_id,
+            draft["draft_id"],
+            str(exc),
+        )
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     await db.delete_order_draft("web", current_user.id)

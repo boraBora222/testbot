@@ -110,12 +110,12 @@ def test_approve_whitelist_entry_redirects_with_success(
 ) -> None:
     import web.routers.users as users_router
 
-    async def fake_moderate_whitelist_address(whitelist_id: str, **kwargs):
+    async def fake_moderate_whitelist_address_with_audit(whitelist_id: str, **kwargs):
         assert whitelist_id == "wla_1"
         assert kwargs["verified_by"] == "admin"
-        return {"id": "wla_1"}
+        return {"id": "wla_1"}, object()
 
-    monkeypatch.setattr(users_router, "moderate_whitelist_address", fake_moderate_whitelist_address)
+    monkeypatch.setattr(users_router, "moderate_whitelist_address_with_audit", fake_moderate_whitelist_address_with_audit)
 
     response = app_client.post(
         "/users/whitelist/wla_1/approve",
@@ -125,6 +125,35 @@ def test_approve_whitelist_entry_redirects_with_success(
 
     assert response.status_code == 303
     assert "wla_1 approved" in unquote_plus(response.headers["location"])
+
+
+def test_reject_whitelist_entry_uses_audited_service(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import web.routers.users as users_router
+
+    captured = {"kwargs": None}
+
+    async def fake_moderate_whitelist_address_with_audit(whitelist_id: str, **kwargs):
+        assert whitelist_id == "wla_2"
+        captured["kwargs"] = kwargs
+        return {"id": "wla_2"}, object()
+
+    monkeypatch.setattr(users_router, "moderate_whitelist_address_with_audit", fake_moderate_whitelist_address_with_audit)
+
+    response = app_client.post(
+        "/users/whitelist/wla_2/reject",
+        auth=("admin", "password"),
+        data={"reason": "Address mismatch"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "wla_2 rejected" in unquote_plus(response.headers["location"])
+    assert captured["kwargs"] is not None
+    assert captured["kwargs"]["verified_by"] == "admin"
+    assert captured["kwargs"]["rejection_reason"] == "Address mismatch"
 
 
 def test_save_user_limits_uses_audited_service(
@@ -208,18 +237,30 @@ def test_broadcast_enqueues_traced_payloads(
         "/users/broadcast",
         auth=("admin", "password"),
         data={"message": "Latency probe"},
+        headers={"X-Correlation-Id": "corr-broadcast-123"},
         follow_redirects=False,
     )
 
     app_client.app.dependency_overrides.clear()
 
     assert response.status_code == 303
+    assert response.headers["x-correlation-id"] == "corr-broadcast-123"
+    assert response.headers["x-request-id"] == "corr-broadcast-123"
     assert len(queued_messages) == 2
     for queue_name, payload in queued_messages:
         assert queue_name == settings.broadcast_queue_name
+        assert payload["version"] == "v1"
+        assert payload["meta"]["producer"] == "web.users.broadcast"
+        assert payload["meta"]["queue_name"] == settings.broadcast_queue_name
+        assert payload["meta"]["event_name"] == "broadcast"
+        assert payload["meta"]["correlation_id"] == "corr-broadcast-123"
+        assert payload["meta"]["trace_id"] == "corr-broadcast-123"
+        assert payload["payload"]["type"] == "broadcast"
+        assert payload["payload"]["text"] == "Latency probe"
         assert payload["type"] == "broadcast"
         assert payload["text"] == "Latency probe"
         assert payload["_async_trace"]["producer"] == "web.users.broadcast"
         assert payload["_async_trace"]["queue_name"] == settings.broadcast_queue_name
         assert payload["_async_trace"]["event_name"] == "broadcast"
-        assert payload["_async_trace"]["trace_id"] != ""
+        assert payload["_async_trace"]["correlation_id"] == "corr-broadcast-123"
+        assert payload["_async_trace"]["trace_id"] == "corr-broadcast-123"

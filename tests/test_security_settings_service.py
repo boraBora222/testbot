@@ -10,9 +10,10 @@ from shared.services.security_settings import (
     build_default_whitelist_label,
     create_pending_whitelist_entry,
     create_order_with_security_checks,
+    moderate_whitelist_address_with_audit,
     update_limit_quota_with_audit,
 )
-from shared.types.enums import OrderCreatedFrom, VerificationLevel
+from shared.types.enums import OrderCreatedFrom, VerificationLevel, WhitelistAddressStatus
 
 
 @pytest.mark.anyio
@@ -220,3 +221,55 @@ async def test_create_pending_whitelist_entry_preserves_explicit_label(
     )
 
     assert entry.label == "Treasury"
+
+
+@pytest.mark.anyio
+async def test_moderate_whitelist_address_with_audit_writes_append_only_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shared import db
+
+    captured = {"audit": None}
+
+    async def fake_get_whitelist_address_by_id(whitelist_address_id: str):
+        assert whitelist_address_id == "wla_1"
+        return {
+            "id": "wla_1",
+            "user_id": 321,
+            "status": "pending",
+        }
+
+    async def fake_moderate_whitelist_address(whitelist_address_id: str, **kwargs):
+        assert whitelist_address_id == "wla_1"
+        assert kwargs["new_status"] == WhitelistAddressStatus.ACTIVE
+        assert kwargs["verified_by"] == "admin"
+        return {
+            "id": "wla_1",
+            "user_id": 321,
+            "status": "active",
+            "verified_by": "admin",
+        }
+
+    async def fake_insert_whitelist_moderation_audit_event(entry):
+        captured["audit"] = entry
+
+    monkeypatch.setattr(db, "get_whitelist_address_by_id", fake_get_whitelist_address_by_id)
+    monkeypatch.setattr(db, "moderate_whitelist_address", fake_moderate_whitelist_address)
+    monkeypatch.setattr(db, "insert_whitelist_moderation_audit_event", fake_insert_whitelist_moderation_audit_event)
+
+    result = await moderate_whitelist_address_with_audit(
+        "wla_1",
+        new_status=WhitelistAddressStatus.ACTIVE,
+        verified_by=" admin ",
+    )
+
+    assert result is not None
+    updated_entry, audit_event = result
+    assert updated_entry["status"] == "active"
+    assert audit_event.whitelist_address_id == "wla_1"
+    assert audit_event.user_id == 321
+    assert audit_event.actor == "admin"
+    assert audit_event.old_status == WhitelistAddressStatus.PENDING
+    assert audit_event.new_status == WhitelistAddressStatus.ACTIVE
+    assert audit_event.reason == "approved"
+    assert captured["audit"] == audit_event

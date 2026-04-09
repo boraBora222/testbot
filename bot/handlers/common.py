@@ -10,7 +10,7 @@ from bot.crypto_exchange_bot import REPLY_MENU_BUTTONS, build_reply_main_menu_ke
 from bot.redis_client import increment_window_counter, publish_message
 from bot.states import SupportStates
 from shared import db
-from shared.async_tracing import add_async_trace, format_async_trace
+from shared.async_tracing import build_async_message, format_async_trace
 from shared.config import settings
 from shared.models import MaterialDB, SupportMessageDB
 from shared.types.enums import MaterialContentType
@@ -34,7 +34,7 @@ async def _ensure_known_user(message: types.Message) -> None:
 
 
 async def _enqueue_manager_notification(payload: dict) -> None:
-    traced_payload = add_async_trace(
+    traced_payload = build_async_message(
         payload,
         producer="bot.handlers.common",
         queue_name=settings.notify_managers_queue_name,

@@ -6,7 +6,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from shared import db
-from shared.async_tracing import duration_ms, format_async_trace, get_async_trace, utc_now
+from shared.async_tracing import bind_correlation_id, duration_ms, format_async_trace, get_async_payload, get_async_trace, reset_correlation_id, utc_now
 from shared.types.enums import OrderStatus
 
 from .config import settings
@@ -123,7 +123,17 @@ async def process_order_status_message(message_data: dict, bot: Bot) -> None:
         logger.exception("Invalid order status payload: %s", message_data)
         return
 
-    updated_order = await db.update_order_status_by_order_id(order_id, new_status)
+    trace = get_async_trace(message_data)
+    updated_order = await db.update_order_status_by_order_id(
+        order_id,
+        new_status,
+        source="bot.queue_consumer.order_status",
+        actor="system",
+        reason=reason,
+        correlation_id=trace.get("correlation_id"),
+        queue_name=settings.order_status_queue_name,
+        event_name=str(trace.get("event_name") or message_data.get("event") or message_data.get("type") or "order_status_change"),
+    )
     if not updated_order:
         logger.warning("Order not found for status update: %s", order_id)
         return
@@ -202,14 +212,19 @@ async def _listen_queue(queue_name: str, processor, bot: Bot, queue_label: str) 
             if not message:
                 continue
             _queue, raw_payload = message
-            payload = json.loads(raw_payload)
-            _log_async_stage(
-                payload,
-                queue_name=queue_name,
-                stage="dequeued",
-                finished_at=utc_now(),
-            )
-            await processor(payload, bot)
+            message_payload = json.loads(raw_payload)
+            payload = get_async_payload(message_payload)
+            token = bind_correlation_id(get_async_trace(message_payload).get("correlation_id"))
+            try:
+                _log_async_stage(
+                    message_payload,
+                    queue_name=queue_name,
+                    stage="dequeued",
+                    finished_at=utc_now(),
+                )
+                await processor(payload, bot)
+            finally:
+                reset_correlation_id(token)
             await asyncio.sleep(0.1)
         except RedisConnectionError:
             logger.exception("Redis connection error in %s consumer.", queue_label)

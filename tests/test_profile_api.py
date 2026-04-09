@@ -158,7 +158,7 @@ def test_get_profile_notifications_returns_current_preferences(
     }
 
 
-def test_profile_api_adds_request_timing_headers(
+def test_profile_api_adds_correlation_headers(
     app_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -182,10 +182,11 @@ def test_profile_api_adds_request_timing_headers(
 
     monkeypatch.setattr(db, "get_exchange_user", fake_get_exchange_user)
 
-    response = app_client.get("/api/profile/notifications")
+    response = app_client.get("/api/profile/notifications", headers={"X-Correlation-Id": "corr-profile-123"})
 
     assert response.status_code == 200
-    assert response.headers["x-request-id"] != ""
+    assert response.headers["x-correlation-id"] == "corr-profile-123"
+    assert response.headers["x-request-id"] == "corr-profile-123"
     assert response.headers["server-timing"].startswith("app;dur=")
 
 

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional
 
 from bson import ObjectId
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from shared.types.enums import (
     ApplicationStatus,
@@ -221,14 +221,42 @@ class CurrentOrderDraftResponse(BaseModel):
 class UpsertOrderDraftRequest(BaseModel):
     source: DraftSource
     source_order_id: Optional[str] = None
-    exchange_type: ExchangeType
-    from_currency: str = Field(min_length=1)
-    to_currency: str = Field(min_length=1)
-    amount: str = Field(min_length=1)
-    network: str = Field(min_length=1)
-    address: str = Field(min_length=1)
+    exchange_type: Optional[ExchangeType] = None
+    from_currency: Optional[str] = None
+    to_currency: Optional[str] = None
+    amount: Optional[str] = None
+    network: Optional[str] = None
+    address: Optional[str] = None
     use_whitelist: Optional[bool] = None
-    current_step: DraftStep = DraftStep.CONFIRM
+    current_step: DraftStep
+
+    @field_validator("source_order_id", "from_currency", "to_currency", "amount", "network", "address")
+    @classmethod
+    def _normalize_optional_strings(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value cannot be blank.")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_required_fields_for_step(self) -> "UpsertOrderDraftRequest":
+        required_fields_by_step: dict[DraftStep, tuple[str, ...]] = {
+            DraftStep.AMOUNT: ("exchange_type", "from_currency", "to_currency", "amount"),
+            DraftStep.ADDRESS: ("exchange_type", "from_currency", "to_currency", "amount", "network"),
+            DraftStep.CONFIRM: ("exchange_type", "from_currency", "to_currency", "amount", "network", "address"),
+        }
+        missing_fields = [
+            field_name
+            for field_name in required_fields_by_step[self.current_step]
+            if getattr(self, field_name) is None
+        ]
+        if missing_fields:
+            raise ValueError(
+                f"Draft step {self.current_step.value} requires fields: {', '.join(missing_fields)}."
+            )
+        return self
 
 
 class ProfileLimitsResponse(BaseModel):

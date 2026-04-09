@@ -6,9 +6,8 @@ from pydantic import ValidationError
 
 from shared import db
 from shared.models import LimitQuotaDB, NotificationPreferences, WebUserDB
-from shared.services import documents as document_service
+from shared.services import documents as document_service, profile_service
 from shared.security_settings import calculate_remaining_quota
-from shared.services.security_settings import create_pending_whitelist_entry
 from shared.types.enums import ClientDocumentType
 from web.auth import get_current_user
 from web.models import (
@@ -34,6 +33,7 @@ PROFILE_DOCUMENT_FORBIDDEN_MESSAGE = "You do not have access to this profile doc
 WHITELIST_ENTRY_NOT_FOUND_MESSAGE = "Whitelist entry not found."
 WHITELIST_ENTRY_IN_USE_MESSAGE = "Whitelist entry is used by an active order and cannot be deleted."
 WHITELIST_REJECTED_DELETE_MESSAGE = "Rejected whitelist entries cannot be deleted."
+create_pending_whitelist_entry = profile_service.create_pending_whitelist_entry
 
 
 def _format_decimal(value: Decimal) -> str:

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import sys
 from time import perf_counter
-from uuid import uuid4
 import uvicorn
 # Removed unused imports: json, Optional, ObjectId, bson_errors, HTTPException, llm_service, application_service, redis_client, ApplicationStatus, ApplicationDB
 from fastapi import FastAPI, Depends, Request
@@ -17,6 +16,7 @@ from contextlib import asynccontextmanager
 # Import config, db functions, routers, auth
 from .config import settings
 from shared import db
+from shared.async_tracing import bind_correlation_id, extract_correlation_id, get_or_create_correlation_id, reset_correlation_id
 from . import redis_client # Import redis_client
 # Import routers
 from .routers import applications, auth, deals, links, orders, profile, public, users # Added users router
@@ -116,35 +116,41 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_request_timing_headers(request: Request, call_next):
-    request_id = request.headers.get("x-request-id") or uuid4().hex[:12]
+    correlation_id = get_or_create_correlation_id(extract_correlation_id(request.headers))
+    request.state.correlation_id = correlation_id
+    request.state.request_id = correlation_id
+    token = bind_correlation_id(correlation_id)
     started_at = perf_counter()
     try:
         response = await call_next(request)
     except Exception:
         duration_ms = (perf_counter() - started_at) * 1000
         logger.exception(
-            "HTTP %s %s failed in %.2fms request_id=%s",
+            "HTTP %s %s failed in %.2fms correlation_id=%s",
             request.method,
             request.url.path,
             duration_ms,
-            request_id,
+            correlation_id,
         )
         raise
+    else:
+        duration_ms = (perf_counter() - started_at) * 1000
+        response.headers["X-Correlation-Id"] = correlation_id
+        response.headers["X-Request-Id"] = correlation_id
+        response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
 
-    duration_ms = (perf_counter() - started_at) * 1000
-    response.headers["X-Request-Id"] = request_id
-    response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
-
-    if request.url.path.startswith(("/api/", "/auth/", "/public/")):
-        logger.info(
-            "HTTP %s %s -> %s in %.2fms request_id=%s",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-            request_id,
-        )
-    return response
+        if request.url.path.startswith(("/api/", "/auth/", "/public/")):
+            logger.info(
+                "HTTP %s %s -> %s in %.2fms correlation_id=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+                correlation_id,
+            )
+        return response
+    finally:
+        reset_correlation_id(token)
 
 # --- Template and Static Files Setup ---
 # Paths are relative to the WORKDIR (/app) inside the container

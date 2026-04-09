@@ -5,7 +5,7 @@ from datetime import datetime
 from bson import ObjectId
 
 # Import shared components
-from shared.async_tracing import add_async_trace
+from shared.async_tracing import build_async_message
 from shared.db import get_applications_collection
 from shared.types.enums import ApplicationStatus
 from web.redis_client import publish_message # Assuming redis client is set up here
@@ -55,7 +55,7 @@ async def _publish_update_event(application_id: str, user_id: int, status: Appli
         message_data["moderation_comment"] = comment
 
     try:
-        traced_payload = add_async_trace(
+        traced_payload = build_async_message(
             message_data,
             producer="web.application_service",
             queue_name=queue_name,

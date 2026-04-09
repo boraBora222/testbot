@@ -22,16 +22,17 @@ from shared.db import (
     is_user_banned,
     list_limit_quota_history,
     list_pending_whitelist_addresses,
-    moderate_whitelist_address,
 )
-from shared.async_tracing import add_async_trace
+from shared.async_tracing import build_async_message
 from shared.config import settings
-from shared.services.security_settings import update_limit_quota_with_audit
+from shared.services import profile_service
 from shared.types.enums import VerificationLevel, WhitelistAddressStatus
 # redis_client is in the parent directory (web)
 from ..redis_client import publish_message
 
 logger = logging.getLogger(__name__)
+moderate_whitelist_address_with_audit = profile_service.moderate_whitelist_address_with_audit
+update_limit_quota_with_audit = profile_service.update_limit_quota_with_audit
 
 router = APIRouter(
     tags=["Users & Broadcast"],
@@ -145,7 +146,7 @@ async def handle_broadcast(
                 "text": message
             }
             try:
-                task = add_async_trace(
+                task = build_async_message(
                     task,
                     producer="web.users.broadcast",
                     queue_name=settings.broadcast_queue_name,
@@ -215,14 +216,15 @@ async def get_pending_whitelist_page(
 @router.post("/users/whitelist/{whitelist_id}/approve", name="approve_whitelist_entry")
 async def approve_whitelist_entry(whitelist_id: str, moderator_username: str = Depends(authenticate_moderator)):
     try:
-        updated_entry = await moderate_whitelist_address(
+        result = await moderate_whitelist_address_with_audit(
             whitelist_id,
             new_status=WhitelistAddressStatus.ACTIVE,
             verified_by=moderator_username,
         )
-        if updated_entry is None:
+        if result is None:
             redirect_url = _build_redirect_url("get_pending_whitelist_page", error="Whitelist entry not found.")
         else:
+            updated_entry, _audit_event = result
             redirect_url = _build_redirect_url(
                 "get_pending_whitelist_page",
                 message=f"Whitelist entry {updated_entry['id']} approved.",
@@ -239,15 +241,16 @@ async def reject_whitelist_entry(
     moderator_username: str = Depends(authenticate_moderator),
 ):
     try:
-        updated_entry = await moderate_whitelist_address(
+        result = await moderate_whitelist_address_with_audit(
             whitelist_id,
             new_status=WhitelistAddressStatus.REJECTED,
             verified_by=moderator_username,
             rejection_reason=reason,
         )
-        if updated_entry is None:
+        if result is None:
             redirect_url = _build_redirect_url("get_pending_whitelist_page", error="Whitelist entry not found.")
         else:
+            updated_entry, _audit_event = result
             redirect_url = _build_redirect_url(
                 "get_pending_whitelist_page",
                 message=f"Whitelist entry {updated_entry['id']} rejected.",

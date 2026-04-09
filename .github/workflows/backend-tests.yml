@@ -1,4 +1,4 @@
-name: Backend Auth Tests
+name: Backend Exchange Tests
 
 on:
   push:
@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 jobs:
-  backend-auth:
+  backend-exchange:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -39,7 +39,9 @@ jobs:
           @'
           BOT_NAME=reply_bot_ci
           TELEGRAM_BOT_TOKEN=000000:ci-placeholder
-          MONGO_URI=mongodb://mongo:27017/
+          MONGO_INITDB_ROOT_USERNAME=reply_bot_admin
+          MONGO_INITDB_ROOT_PASSWORD=reply_bot_ci_mongo_password
+          MONGO_URI=mongodb://reply_bot_admin:reply_bot_ci_mongo_password@mongo:27017/?authSource=admin
           MONGO_DB_NAME=reply_db
           REDIS_HOST=redis
           REDIS_PORT=6379
@@ -91,7 +93,7 @@ jobs:
           LOG_LEVEL=INFO
           '@ | Set-Content -Path .env.ci -NoNewline
 
-      - name: Run backend auth tests in Docker
+      - name: Run backend exchange contract tests in Docker
         shell: pwsh
         run: |
           docker compose -p backend-auth-ci --env-file .env.ci --profile test run --rm --build backend-test

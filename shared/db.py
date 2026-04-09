@@ -11,6 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from shared.async_tracing import get_correlation_id, normalize_correlation_id
 from shared.config import settings
 from shared.models import (
     ApplicationDB,
@@ -24,8 +25,10 @@ from shared.models import (
     MaterialDB,
     NotificationPreferences,
     OrderDB,
+    OrderStatusAuditDB,
     OrderDraftDB,
     SupportMessageDB,
+    WhitelistModerationAuditDB,
     WebUserDB,
     WebsiteSubmissionDB,
     WhitelistAddressDB,
@@ -99,6 +102,20 @@ def _serialize_limit_quota(quota: LimitQuotaDB) -> dict:
     for field_name in _LIMIT_QUOTA_DECIMAL_FIELDS:
         payload[field_name] = _to_decimal128(payload[field_name])
     payload["verification_level"] = quota.verification_level.value
+    return payload
+
+
+def _serialize_whitelist_moderation_audit(entry: WhitelistModerationAuditDB) -> dict:
+    payload = entry.model_dump()
+    payload["old_status"] = entry.old_status.value
+    payload["new_status"] = entry.new_status.value
+    return payload
+
+
+def _serialize_order_status_audit(entry: OrderStatusAuditDB) -> dict:
+    payload = entry.model_dump()
+    payload["old_status"] = entry.old_status.value
+    payload["new_status"] = entry.new_status.value
     return payload
 
 
@@ -263,6 +280,16 @@ async def _ensure_indexes(database: AsyncIOMotorDatabase) -> None:
     )
     await database.whitelist_addresses.create_index(
         [("user_id", pymongo.ASCENDING), ("status", pymongo.ASCENDING), ("updated_at", pymongo.DESCENDING)]
+    )
+    await database.whitelist_moderation_audit.create_index(
+        [("whitelist_address_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)]
+    )
+    await database.whitelist_moderation_audit.create_index([("user_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)])
+    await database.order_status_audit.create_index([("order_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)])
+    await database.order_status_audit.create_index([("user_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)])
+    await database.order_status_audit.create_index(
+        [("correlation_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)],
+        partialFilterExpression={"correlation_id": {"$exists": True, "$type": "string"}},
     )
 
 
@@ -569,6 +596,14 @@ async def list_limit_quota_history(user_id: int | None = None, limit: int = 50) 
     return items
 
 
+async def insert_whitelist_moderation_audit_event(entry: WhitelistModerationAuditDB) -> None:
+    await get_db().whitelist_moderation_audit.insert_one(_serialize_whitelist_moderation_audit(entry))
+
+
+async def insert_order_status_audit_event(entry: OrderStatusAuditDB) -> None:
+    await get_db().order_status_audit.insert_one(_serialize_order_status_audit(entry))
+
+
 async def list_whitelist_addresses_for_user(user_id: int) -> list[dict]:
     items: list[dict] = []
     cursor = get_db().whitelist_addresses.find({"user_id": user_id}).sort(
@@ -707,11 +742,14 @@ async def moderate_whitelist_address(
         return None
     if current["status"] != WhitelistAddressStatus.PENDING.value:
         raise ValueError("Only pending whitelist entries can be moderated.")
+    normalized_actor = verified_by.strip()
+    if not normalized_actor:
+        raise ValueError("Actor is required.")
 
     now = _utc_now()
     update_fields: dict[str, object] = {
         "status": new_status.value,
-        "verified_by": verified_by.strip(),
+        "verified_by": normalized_actor,
         "verified_at": now,
         "updated_at": now,
     }
@@ -873,7 +911,22 @@ async def list_orders_for_user(
     return orders, total
 
 
-async def update_order_status_by_order_id(order_id: str, new_status: OrderStatus) -> Optional[dict]:
+async def update_order_status_by_order_id(
+    order_id: str,
+    new_status: OrderStatus,
+    *,
+    source: str = "system",
+    actor: str = "system",
+    reason: str | None = None,
+    correlation_id: str | None = None,
+    queue_name: str | None = None,
+    event_name: str | None = None,
+) -> Optional[dict]:
+    current_order = await get_order_by_order_id(order_id)
+    if current_order is None:
+        return None
+
+    previous_status = OrderStatus(current_order["status"])
     now = _utc_now()
     updated_document = await get_db().orders.find_one_and_update(
         {"order_id": order_id},
@@ -882,7 +935,25 @@ async def update_order_status_by_order_id(order_id: str, new_status: OrderStatus
     )
     if not updated_document:
         return None
-    return _deserialize_order(updated_document)
+    updated_order = _deserialize_order(updated_document)
+
+    if previous_status != new_status:
+        audit_event = OrderStatusAuditDB(
+            order_id=updated_order["order_id"],
+            user_id=int(updated_order["user_id"]),
+            old_status=previous_status,
+            new_status=new_status,
+            source=source,
+            actor=actor,
+            reason=reason,
+            correlation_id=normalize_correlation_id(correlation_id) or get_correlation_id(),
+            queue_name=queue_name,
+            event_name=event_name,
+            created_at=now,
+        )
+        await insert_order_status_audit_event(audit_event)
+
+    return updated_order
 
 
 async def count_orders_for_user(user_id: int) -> int:

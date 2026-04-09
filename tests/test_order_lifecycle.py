@@ -87,6 +87,28 @@ def test_build_order_draft_and_resume_state_roundtrip() -> None:
     assert resumed_state["resumed_from_draft"] is True
 
 
+def test_build_order_draft_allows_address_step_without_wallet_address() -> None:
+    draft = build_order_draft(
+        owner_channel="web",
+        owner_id="user_test",
+        payload={
+            "exchange_type": ExchangeType.FIAT_TO_CRYPTO.value,
+            "from_currency": "RUB",
+            "to_currency": "USDT",
+            "amount": "100000",
+            "network": "TRC20",
+            "use_whitelist": True,
+        },
+        source=DraftSource.MANUAL,
+        current_step=DraftStep.ADDRESS,
+        draft_id="draft_step_002",
+    )
+
+    assert draft.current_step == DraftStep.ADDRESS
+    assert draft.network == "TRC20"
+    assert draft.address is None
+
+
 def test_build_order_from_payload_marks_draft_submit_metadata() -> None:
     order = build_order_from_payload(
         order_id="ORD-10002",
@@ -134,6 +156,22 @@ def test_build_order_from_payload_requires_whitelist_reference() -> None:
             },
             is_demo=True,
             created_from=OrderCreatedFrom.MANUAL,
+        ) 
+
+
+def test_repeat_seed_rejects_processing_orders() -> None:
+    with pytest.raises(ValueError, match="completed or cancelled orders"):
+        build_repeat_seed(
+            {
+                "order_id": "ORD-50001",
+                "status": OrderStatus.PROCESSING.value,
+                "exchange_type": ExchangeType.FIAT_TO_CRYPTO.value,
+                "from_currency": "RUB",
+                "to_currency": "USDT",
+                "amount": "100000",
+                "network": "TRC20",
+                "address": "TAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            }
         )
 
 

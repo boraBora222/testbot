@@ -27,6 +27,7 @@ Good review habit:
 
 The FastAPI app now adds these headers to API responses:
 
+- `X-Correlation-Id`
 - `X-Request-Id`
 - `Server-Timing: app;dur=<ms>`
 
@@ -41,13 +42,13 @@ $env:VITE_ENABLE_REQUEST_TIMING="1"
 Then start the frontend and watch the browser console for entries like:
 
 ```text
-[api-latency] { path, status, clientDurationMs, requestId, serverTiming }
+[api-latency] { path, status, clientDurationMs, correlationId, serverTiming }
 ```
 
 What to verify:
 
 - `clientDurationMs` is reasonable for local flows.
-- `requestId` is present, so browser observations can be correlated with backend logs.
+- `correlationId` is present, so browser observations can be correlated with backend logs.
 - `serverTiming` is present, so server-side time can be separated from browser/network overhead.
 
 Recommended smoke flows:
@@ -61,11 +62,22 @@ Recommended smoke flows:
 
 Redis payloads now carry `_async_trace` metadata with:
 
-- `trace_id`
+- `correlation_id`
 - `published_at`
 - `producer`
 - `queue_name`
 - `event_name`
+
+New producers also publish a soft-versioned envelope with:
+
+- `version = v1`
+- `meta`
+- `payload`
+
+Compatibility note:
+
+- `trace_id` may still appear during transition, but it must mirror the same value as `correlation_id`.
+- Root business fields and root `_async_trace` are still mirrored during transition so legacy consumers do not break while new consumers move to `meta` + `payload`.
 
 The bot consumer logs this metadata on dequeue and after Telegram send, including `queue_latency_ms`.
 
@@ -92,7 +104,8 @@ Notes:
 
 What to verify in logs:
 
-- The same `trace_id` appears across enqueue, dequeue, and send stages.
+- The same `correlation_id` appears across enqueue, dequeue, and send stages.
+- `version=v1` appears on new producer log lines, while consumers still successfully process the message.
 - `queue_latency_ms` on `stage=dequeued` stays below the expected local threshold.
 - `total_latency_ms` on `stage=telegram_sent` stays below the end-to-end threshold.
 - No `telegram_failed` stage appears for the probe event.
@@ -102,5 +115,21 @@ What to verify in logs:
 - Run `npm run build` in `front` and record the chunk sizes.
 - Open the frontend with `VITE_ENABLE_REQUEST_TIMING=1` and verify console timing for login/settings flows.
 - Trigger at least one manager notification probe and one broadcast probe.
-- Confirm bot logs show `stage=dequeued` followed by `stage=telegram_sent` for the same `trace_id`.
-- If latency crosses the warning threshold, capture the `trace_id`, `requestId`, and the exact log lines before release.
+- Confirm bot logs show `stage=dequeued` followed by `stage=telegram_sent` for the same `correlation_id`.
+- Confirm the queued payload contains `version`, `meta`, and `payload` while still exposing compatibility mirrors for current consumers.
+- If latency crosses the warning threshold, capture the `correlation_id` and the exact log lines before release.
+
+## 6. Supporting Read-Model Follow-Up
+
+These items are intentionally follow-up work, not implied release-ready features:
+
+- Timeline aggregate read model:
+  per-order timeline data exists, but there is no dedicated cross-order timeline feed yet.
+- Compliance readiness read model:
+  limits, whitelist, and profile documents exist as separate APIs, but there is no single backend readiness summary endpoint yet.
+- Notification inbox read model:
+  queue tracing exists for delivery diagnostics, but there is no persisted notification center API yet.
+
+Review rule:
+
+- Keep these surfaces documented as backend follow-ups until dedicated stable contracts exist.

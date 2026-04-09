@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from shared import db
+from shared.async_tracing import bind_correlation_id, build_async_message, get_async_payload, reset_correlation_id
 from shared.models import AuthSessionDB, OrderDB, OrderDraftDB, WebUserDB
 from shared.types.enums import DraftSource, DraftStep, ExchangeType, OrderCreatedFrom, OrderStatus
 from web.config import settings
@@ -155,6 +156,166 @@ def test_upsert_and_delete_current_order_draft(app_client: TestClient, monkeypat
 
     assert delete_response.status_code == 200
     assert delete_response.json()["message"] == "Draft deleted successfully."
+
+
+def test_upsert_current_order_draft_accepts_address_step_without_address(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_web_user(app_client, linked_exchange_user_id=321)
+    saved_draft = {"value": None}
+
+    async def fake_get_current_order_draft(owner_channel: str, owner_id: str):
+        assert owner_channel == "web"
+        assert owner_id == "user_test"
+        return None
+
+    async def fake_create_or_replace_order_draft(draft: OrderDraftDB) -> OrderDraftDB:
+        saved_draft["value"] = draft
+        return draft
+
+    monkeypatch.setattr(db, "get_current_order_draft", fake_get_current_order_draft)
+    monkeypatch.setattr(db, "create_or_replace_order_draft", fake_create_or_replace_order_draft)
+
+    response = app_client.put(
+        "/order-drafts/current",
+        json={
+            "source": "manual",
+            "exchange_type": "fiat_to_crypto",
+            "from_currency": "RUB",
+            "to_currency": "USDT",
+            "amount": "100000",
+            "network": "TRC20",
+            "use_whitelist": True,
+            "current_step": "address",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["current_step"] == "address"
+    assert payload["address"] is None
+    assert saved_draft["value"] is not None
+    assert saved_draft["value"].current_step == DraftStep.ADDRESS
+    assert saved_draft["value"].network == "TRC20"
+    assert saved_draft["value"].address is None
+
+
+def test_repeat_order_returns_409_for_non_repeatable_status(
+    app_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_web_user(app_client, linked_exchange_user_id=321)
+
+    async def fake_get_order_for_user(order_id: str, user_id: int):
+        assert order_id == "ORD-20001"
+        assert user_id == 321
+        return {
+            **VALID_ORDER_DICT,
+            "status": OrderStatus.PROCESSING.value,
+        }
+
+    monkeypatch.setattr(db, "get_order_for_user", fake_get_order_for_user)
+
+    response = app_client.post("/orders/ORD-20001/repeat")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Repeat is available only for completed or cancelled orders."
+
+
+def test_get_async_payload_understands_v1_envelope() -> None:
+    message = build_async_message(
+        {
+            "type": "order_status_change",
+            "order_id": "ORD-20001",
+            "new_status": OrderStatus.PROCESSING.value,
+            "reason": "Manager review started.",
+        },
+        producer="tests.test_orders_api",
+        queue_name="bot:order_status",
+        event_name="order_status_change",
+        correlation_id="corr-order-envelope-1",
+    )
+
+    payload = get_async_payload(message)
+
+    assert message["version"] == "v1"
+    assert message["meta"]["correlation_id"] == "corr-order-envelope-1"
+    assert payload["type"] == "order_status_change"
+    assert payload["order_id"] == "ORD-20001"
+    assert payload["_async_trace"]["queue_name"] == "bot:order_status"
+    assert payload["_async_trace"]["event_name"] == "order_status_change"
+    assert payload["_async_trace"]["correlation_id"] == "corr-order-envelope-1"
+
+
+@pytest.mark.anyio
+async def test_update_order_status_by_order_id_writes_append_only_audit_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {"audit": None, "filters": None, "update": None}
+
+    class _FakeOrdersCollection:
+        async def find_one_and_update(self, filters, update, return_document):
+            captured["filters"] = filters
+            captured["update"] = update
+            return {
+                **VALID_ORDER_DICT,
+                "order_id": "ORD-20001",
+                "status": OrderStatus.PROCESSING.value,
+                "updated_at": datetime.now(timezone.utc),
+            }
+
+    class _FakeDatabase:
+        def __init__(self) -> None:
+            self.orders = _FakeOrdersCollection()
+
+    async def fake_get_order_by_order_id(order_id: str):
+        assert order_id == "ORD-20001"
+        return {
+            **VALID_ORDER_DICT,
+            "order_id": order_id,
+            "status": OrderStatus.NEW.value,
+        }
+
+    async def fake_insert_order_status_audit_event(entry):
+        captured["audit"] = entry
+
+    monkeypatch.setattr(db, "get_order_by_order_id", fake_get_order_by_order_id)
+    monkeypatch.setattr(db, "get_db", lambda: _FakeDatabase())
+    monkeypatch.setattr(db, "insert_order_status_audit_event", fake_insert_order_status_audit_event)
+
+    token = bind_correlation_id("corr-order-status-1")
+    try:
+        updated = await db.update_order_status_by_order_id(
+            "ORD-20001",
+            OrderStatus.PROCESSING,
+            source="bot.queue_consumer.order_status",
+            actor="system",
+            reason="Manager review started.",
+            queue_name="bot:order_status",
+            event_name="order_status_change",
+        )
+    finally:
+        reset_correlation_id(token)
+
+    assert updated is not None
+    assert updated["status"] == OrderStatus.PROCESSING.value
+    assert captured["filters"] == {"order_id": "ORD-20001"}
+    assert captured["update"]["$set"]["status"] == OrderStatus.PROCESSING.value
+    assert isinstance(captured["update"]["$set"]["updated_at"], datetime)
+
+    audit = captured["audit"]
+    assert audit is not None
+    assert audit.order_id == "ORD-20001"
+    assert audit.user_id == 321
+    assert audit.old_status == OrderStatus.NEW
+    assert audit.new_status == OrderStatus.PROCESSING
+    assert audit.source == "bot.queue_consumer.order_status"
+    assert audit.actor == "system"
+    assert audit.reason == "Manager review started."
+    assert audit.correlation_id == "corr-order-status-1"
+    assert audit.queue_name == "bot:order_status"
+    assert audit.event_name == "order_status_change"
 
 
 def test_submit_current_order_draft_creates_order_and_removes_draft(

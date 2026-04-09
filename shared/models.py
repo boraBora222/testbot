@@ -185,6 +185,63 @@ class LimitQuotaHistoryDB(BaseModel):
             raise ValueError("Value cannot be blank.")
         return normalized
 
+
+class WhitelistModerationAuditDB(BaseModel):
+    """Append-only audit document for whitelist moderation decisions."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    whitelist_address_id: str = Field(min_length=1)
+    user_id: int
+    actor: str = Field(min_length=1)
+    old_status: WhitelistAddressStatus
+    new_status: WhitelistAddressStatus
+    reason: str = Field(min_length=1)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("whitelist_address_id", "actor", "reason")
+    @classmethod
+    def _strip_required_strings(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value cannot be blank.")
+        return normalized
+
+
+class OrderStatusAuditDB(BaseModel):
+    """Append-only audit document for critical order status transitions."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    order_id: str = Field(min_length=1)
+    user_id: int
+    old_status: OrderStatus
+    new_status: OrderStatus
+    source: str = Field(min_length=1)
+    actor: str = Field(min_length=1)
+    reason: Optional[str] = None
+    correlation_id: Optional[str] = None
+    queue_name: Optional[str] = None
+    event_name: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("order_id", "source", "actor")
+    @classmethod
+    def _strip_required_audit_strings(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Value cannot be blank.")
+        return normalized
+
+    @field_validator("reason", "correlation_id", "queue_name", "event_name")
+    @classmethod
+    def _strip_optional_audit_strings(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class WhitelistAddressDB(BaseModel):
     """MongoDB document for user payout addresses awaiting moderation."""
     model_config = ConfigDict(populate_by_name=True)

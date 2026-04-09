@@ -35,7 +35,7 @@ from .exchange_logic import (
 from .redis_client import get_redis_client, publish_message
 from .states import ExchangeStates, ProfileDocumentStates, SupportStates
 from shared import db
-from shared.async_tracing import add_async_trace, format_async_trace
+from shared.async_tracing import build_async_message, format_async_trace
 from shared.models import LimitQuotaDB, OrderDraftDB
 from shared.security_settings import (
     calculate_remaining_quota,
@@ -1419,7 +1419,7 @@ async def cb_confirm_exchange(callback: CallbackQuery, state: FSMContext) -> Non
 
     if data.get("draft_id"):
         await db.delete_order_draft("telegram", str(callback.from_user.id))
-    manager_payload = add_async_trace(
+    manager_payload = build_async_message(
         {
             "type": "notify_managers",
             "event": "new_order",

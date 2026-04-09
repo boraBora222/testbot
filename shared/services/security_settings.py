@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Mapping
 
 from shared import db
-from shared.models import LimitQuotaDB, LimitQuotaHistoryDB, OrderDB, WhitelistAddressDB
+from shared.models import LimitQuotaDB, LimitQuotaHistoryDB, OrderDB, WhitelistAddressDB, WhitelistModerationAuditDB
 from shared.security_settings import (
     LIMIT_WARNING_MESSAGE,
     WHITELIST_APPROVAL_REQUIRED_MESSAGE,
@@ -15,7 +15,7 @@ from shared.security_settings import (
     utc_now,
 )
 from shared.services.order_lifecycle import build_order_from_payload, validate_order_payload
-from shared.types.enums import AddressSource, OrderCreatedFrom, VerificationLevel
+from shared.types.enums import AddressSource, OrderCreatedFrom, VerificationLevel, WhitelistAddressStatus
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,15 @@ def _serialize_audit_value(value: Any) -> Any:
 def build_default_whitelist_label(network: str, address: str) -> str:
     tail = address.strip()[-6:] if address.strip() else "wallet"
     return f"Wallet {network} {tail}"
+
+
+def _normalize_required_reason(reason: str | None, *, default: str | None = None) -> str:
+    candidate = reason.strip() if reason is not None else ""
+    if candidate:
+        return candidate
+    if default is not None:
+        return default
+    raise ValueError("Reason is required.")
 
 
 async def create_pending_whitelist_entry(
@@ -199,3 +208,45 @@ async def update_limit_quota_with_audit(
     saved_quota = await db.upsert_limit_quota(updated_quota)
     await db.insert_limit_quota_history(history_rows)
     return saved_quota, history_rows
+
+
+async def moderate_whitelist_address_with_audit(
+    whitelist_address_id: str,
+    *,
+    new_status: WhitelistAddressStatus,
+    verified_by: str,
+    rejection_reason: str | None = None,
+    audit_reason: str | None = None,
+) -> tuple[dict, WhitelistModerationAuditDB] | None:
+    current = await db.get_whitelist_address_by_id(whitelist_address_id)
+    if current is None:
+        return None
+
+    normalized_actor = verified_by.strip()
+    if not normalized_actor:
+        raise ValueError("Actor is required.")
+
+    normalized_audit_reason = _normalize_required_reason(
+        audit_reason if audit_reason is not None else rejection_reason,
+        default="approved" if new_status == WhitelistAddressStatus.ACTIVE else None,
+    )
+
+    updated_entry = await db.moderate_whitelist_address(
+        whitelist_address_id,
+        new_status=new_status,
+        verified_by=normalized_actor,
+        rejection_reason=rejection_reason,
+    )
+    if updated_entry is None:
+        return None
+
+    audit_event = WhitelistModerationAuditDB(
+        whitelist_address_id=updated_entry["id"],
+        user_id=int(updated_entry["user_id"]),
+        actor=normalized_actor,
+        old_status=WhitelistAddressStatus(current["status"]),
+        new_status=new_status,
+        reason=normalized_audit_reason,
+    )
+    await db.insert_whitelist_moderation_audit_event(audit_event)
+    return updated_entry, audit_event
