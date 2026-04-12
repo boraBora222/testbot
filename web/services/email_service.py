@@ -34,9 +34,11 @@ def _send_email_sync(recipient_email: str, subject: str, body: str) -> None:
     message["To"] = recipient_email
     message.set_content(body)
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp_client:
+    smtp_factory = smtplib.SMTP_SSL if settings.smtp_use_ssl else smtplib.SMTP
+
+    with smtp_factory(settings.smtp_host, settings.smtp_port, timeout=30) as smtp_client:
         smtp_client.ehlo()
-        if settings.smtp_use_tls:
+        if settings.smtp_use_tls and not settings.smtp_use_ssl:
             smtp_client.starttls()
             smtp_client.ehlo()
         smtp_client.login(settings.smtp_username, settings.smtp_password)

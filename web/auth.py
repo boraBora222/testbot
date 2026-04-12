@@ -114,6 +114,8 @@ def build_auth_user_response(user: WebUserDB) -> AuthUserResponse:
         email=user.email,
         email_verified=user.email_verified,
         is_active=user.is_active,
+        first_name=user.first_name,
+        last_name=user.last_name,
         name=user.name,
         company=user.company,
     )

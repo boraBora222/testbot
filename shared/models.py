@@ -476,6 +476,8 @@ class WebUserDB(BaseModel):
     password_hash: str
     is_active: bool = True
     email_verified: bool = False
+    first_name: str = ""
+    last_name: str = ""
     name: str = ""
     company: str = ""
     linked_exchange_user_id: Optional[int] = None

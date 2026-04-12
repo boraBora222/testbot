@@ -68,11 +68,22 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
     confirm_password: str
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str = Field(min_length=1, max_length=120)
+    company: str = Field(min_length=1, max_length=200)
 
     @field_validator("email")
     @classmethod
     def validate_email(cls, value: str) -> str:
         return normalize_email(value)
+
+    @field_validator("first_name", "last_name", "company")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Value must not be empty or whitespace.")
+        return stripped
 
 
 class LoginRequest(BaseModel):
@@ -130,6 +141,8 @@ class AuthUserResponse(BaseModel):
     email: str
     email_verified: bool
     is_active: bool
+    first_name: str = ""
+    last_name: str = ""
     name: str = ""
     company: str = ""
 

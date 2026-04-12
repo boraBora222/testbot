@@ -8,7 +8,7 @@ This document turns sections `7`, `8`, and `9` of `docs/specifications/client_se
 | --- | --- | --- |
 | Public calculator copy | No wording remains about whitelist checks happening after request creation or only for the first deal | Automated + Review |
 | FAQ copy | Whitelist text states that deals and withdrawals are allowed only to active whitelist addresses | Automated + Review |
-| FAQ and dashboard limits copy | Displayed daily values match `basic 1,000,000 ₽/day`, `extended 10,000,000 ₽/day`, `corporate custom` | Automated + Review |
+| FAQ and dashboard limits copy | Displayed wording matches backend defaults: new web account `basic 1,000,000 ₽/day + 5,000,000 ₽/month`, `extended 10,000,000 ₽/day`, `corporate custom` | Automated + Review |
 | Dashboard settings page | Header and helper text use the same active-whitelist rule as the backend and bot | Automated + Review |
 | Telegram bot whitelist flow | Bot prompts state that only active whitelist addresses can be used to complete an order | Automated |
 | API rejection wording | Order rejection for a non-approved wallet explicitly refers to the active whitelist requirement | Automated |

@@ -147,5 +147,7 @@ def test_build_auth_user_response_maps_public_fields() -> None:
     assert response.email == "user@example.com"
     assert response.email_verified is True
     assert response.is_active is True
+    assert response.first_name == ""
+    assert response.last_name == ""
     assert response.name == "Alice"
     assert response.company == "Acme"

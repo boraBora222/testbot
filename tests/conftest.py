@@ -25,10 +25,14 @@ _TEST_ENV = {
     "SMTP_USERNAME": "smtp-user",
     "SMTP_PASSWORD": "smtp-password",
     "SMTP_FROM_EMAIL": "no-reply@example.com",
+    "SMTP_USE_SSL": "false",
     "SMTP_USE_TLS": "true",
     "AUTH_COOKIE_NAME": "cryptodeal_session",
     "AUTH_COOKIE_SECURE": "false",
     "AUTH_COOKIE_SAMESITE": "lax",
+    "WEB_REGISTRATION_DEFAULT_VERIFICATION_LEVEL": "basic",
+    "WEB_REGISTRATION_DEFAULT_DAILY_LIMIT": "1000000",
+    "WEB_REGISTRATION_DEFAULT_MONTHLY_LIMIT": "5000000",
 }
 
 for env_key, env_value in _TEST_ENV.items():
@@ -41,9 +45,17 @@ def clear_auth_state() -> Iterator[None]:
 
     db._web_users.clear()
     db._auth_sessions.clear()
+    db._exchange_users.clear()
+    db._bot_users.clear()
+    db._limit_quotas.clear()
+    db._limit_quota_history.clear()
     yield
     db._web_users.clear()
     db._auth_sessions.clear()
+    db._exchange_users.clear()
+    db._bot_users.clear()
+    db._limit_quotas.clear()
+    db._limit_quota_history.clear()
 
 
 @pytest.fixture

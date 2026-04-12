@@ -219,6 +219,12 @@ def get_db() -> AsyncIOMotorDatabase:
     return _mongo_client[settings.mongo_db_name]
 
 
+def _get_db_if_available() -> Optional[AsyncIOMotorDatabase]:
+    if not _mongo_client or not settings.mongo_db_name:
+        return None
+    return _mongo_client[settings.mongo_db_name]
+
+
 def get_applications_collection():
     return get_db()["applications"]
 
@@ -472,9 +478,65 @@ async def ensure_exchange_user(
     username: Optional[str],
     first_name: Optional[str],
     last_name: Optional[str],
+    *,
+    create_bot_user: bool = True,
+    notification_preferences: Optional[NotificationPreferences] = None,
 ) -> None:
-    database = get_db()
+    database = _get_db_if_available()
     now = _utc_now()
+    stored_preferences = (
+        notification_preferences.model_copy(deep=True)
+        if notification_preferences is not None
+        else build_default_notification_preferences()
+    )
+
+    if database is None:
+        existing_user = _exchange_users.get(telegram_user_id)
+        if existing_user is None:
+            _exchange_users[telegram_user_id] = ExchangeUserDB(
+                telegram_user_id=telegram_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                first_seen_at=now,
+                last_activity_at=now,
+                is_banned=False,
+                notification_preferences=stored_preferences,
+                created_at=now,
+                updated_at=now,
+            )
+        else:
+            _exchange_users[telegram_user_id] = existing_user.model_copy(
+                update={
+                    "username": username,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "last_activity_at": now,
+                    "updated_at": now,
+                }
+            )
+
+        if create_bot_user:
+            existing_bot_user = _bot_users.get(telegram_user_id)
+            if existing_bot_user is None:
+                _bot_users[telegram_user_id] = BotUser(
+                    user_id=telegram_user_id,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            else:
+                _bot_users[telegram_user_id] = existing_bot_user.model_copy(
+                    update={
+                        "username": username,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "last_seen_at": now,
+                    }
+                )
+        return
 
     await database.users.update_one(
         {"telegram_user_id": telegram_user_id},
@@ -490,32 +552,42 @@ async def ensure_exchange_user(
                 "telegram_user_id": telegram_user_id,
                 "first_seen_at": now,
                 "is_banned": False,
-                "notification_preferences": build_default_notification_preferences().model_dump(),
+                "notification_preferences": stored_preferences.model_dump(),
                 "created_at": now,
             },
         },
         upsert=True,
     )
-    await database.bot_users.update_one(
-        {"user_id": telegram_user_id},
-        {
-            "$set": {
-                "username": username,
-                "first_name": first_name,
-                "last_name": last_name,
-                "last_seen_at": now,
+    if create_bot_user:
+        await database.bot_users.update_one(
+            {"user_id": telegram_user_id},
+            {
+                "$set": {
+                    "username": username,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "last_seen_at": now,
+                },
+                "$setOnInsert": {
+                    "user_id": telegram_user_id,
+                    "first_seen_at": now,
+                },
             },
-            "$setOnInsert": {
-                "user_id": telegram_user_id,
-                "first_seen_at": now,
-            },
-        },
-        upsert=True,
-    )
+            upsert=True,
+        )
 
 
 async def delete_exchange_user_data(telegram_user_id: int) -> bool:
-    database = get_db()
+    database = _get_db_if_available()
+    if database is None:
+        users_deleted = _exchange_users.pop(telegram_user_id, None) is not None
+        bot_users_deleted = _bot_users.pop(telegram_user_id, None) is not None
+        quota_deleted = _limit_quotas.pop(telegram_user_id, None) is not None
+        history_before = len(_limit_quota_history)
+        _limit_quota_history[:] = [entry for entry in _limit_quota_history if entry.user_id != telegram_user_id]
+        history_deleted = len(_limit_quota_history) != history_before
+        return users_deleted or bot_users_deleted or quota_deleted or history_deleted
+
     users_result = await database.users.delete_one({"telegram_user_id": telegram_user_id})
     bot_users_result = await database.bot_users.delete_one({"user_id": telegram_user_id})
     limit_quota_result = await database.limit_quotas.delete_one({"user_id": telegram_user_id})
@@ -533,8 +605,70 @@ async def delete_exchange_user_data(telegram_user_id: int) -> bool:
     )
 
 
+async def purge_web_registration_footprint() -> dict[str, int | str]:
+    """Remove shadow exchange profiles (negative telegram_user_id) and related Mongo data.
+
+    Website accounts themselves live in the web process memory (_web_users); restart the web
+    service after running this so sessions and in-memory users are cleared.
+
+    Telegram (positive) users and their orders are not touched.
+    """
+    database = _get_db_if_available()
+    if database is None:
+        shadow_ids = [uid for uid in list(_exchange_users.keys()) if uid < 0]
+        removed_users = 0
+        for uid in shadow_ids:
+            if await delete_exchange_user_data(uid):
+                removed_users += 1
+        _web_users.clear()
+        _auth_sessions.clear()
+        return {
+            "mode": "memory",
+            "shadow_exchange_users_deleted": removed_users,
+            "web_users_cleared": 1,
+            "auth_sessions_cleared": 1,
+        }
+
+    shadow_filter: dict[str, dict[str, int]] = {"user_id": {"$lt": 0}}
+    shadow_tg: dict[str, dict[str, int]] = {"telegram_user_id": {"$lt": 0}}
+
+    orders_deleted = (await database.orders.delete_many(shadow_filter)).deleted_count
+    materials_deleted = (await database.materials.delete_many(shadow_filter)).deleted_count
+    support_deleted = (await database.support_messages.delete_many(shadow_filter)).deleted_count
+    status_audit_deleted = (await database.order_status_audit.delete_many(shadow_filter)).deleted_count
+    wl_audit_deleted = (await database.whitelist_moderation_audit.delete_many(shadow_filter)).deleted_count
+    wl_deleted = (await database.whitelist_addresses.delete_many(shadow_filter)).deleted_count
+    quota_hist_deleted = (await database.limit_quota_history.delete_many(shadow_filter)).deleted_count
+    quotas_deleted = (await database.limit_quotas.delete_many(shadow_filter)).deleted_count
+    bot_deleted = (await database.bot_users.delete_many(shadow_filter)).deleted_count
+    users_deleted = (await database.users.delete_many(shadow_tg)).deleted_count
+    web_drafts_deleted = (await database.order_drafts.delete_many({"owner_channel": "web"})).deleted_count
+    banned_deleted = (await database.banned_users.delete_many(shadow_filter)).deleted_count
+
+    return {
+        "mode": "mongo",
+        "orders_deleted": orders_deleted,
+        "materials_deleted": materials_deleted,
+        "support_messages_deleted": support_deleted,
+        "order_status_audit_deleted": status_audit_deleted,
+        "whitelist_moderation_audit_deleted": wl_audit_deleted,
+        "whitelist_addresses_deleted": wl_deleted,
+        "limit_quota_history_deleted": quota_hist_deleted,
+        "limit_quotas_deleted": quotas_deleted,
+        "bot_users_deleted": bot_deleted,
+        "exchange_users_deleted": users_deleted,
+        "web_order_drafts_deleted": web_drafts_deleted,
+        "banned_users_deleted": banned_deleted,
+    }
+
+
 async def get_exchange_user(telegram_user_id: int) -> Optional[dict]:
-    document = await get_db().users.find_one({"telegram_user_id": telegram_user_id})
+    database = _get_db_if_available()
+    if database is None:
+        document = _exchange_users.get(telegram_user_id)
+        return document.model_dump() if document is not None else None
+
+    document = await database.users.find_one({"telegram_user_id": telegram_user_id})
     if not document:
         return None
     if "_id" in document:
@@ -546,7 +680,20 @@ async def update_exchange_user_notification_preferences(
     telegram_user_id: int,
     preferences: NotificationPreferences,
 ) -> bool:
-    result = await get_db().users.update_one(
+    database = _get_db_if_available()
+    if database is None:
+        existing_user = _exchange_users.get(telegram_user_id)
+        if existing_user is None:
+            return False
+        _exchange_users[telegram_user_id] = existing_user.model_copy(
+            update={
+                "notification_preferences": preferences.model_copy(deep=True),
+                "updated_at": _utc_now(),
+            }
+        )
+        return True
+
+    result = await database.users.update_one(
         {"telegram_user_id": telegram_user_id},
         {
             "$set": {
@@ -559,17 +706,28 @@ async def update_exchange_user_notification_preferences(
 
 
 async def get_limit_quota(user_id: int) -> Optional[dict]:
-    document = await get_db().limit_quotas.find_one({"user_id": user_id})
+    database = _get_db_if_available()
+    if database is None:
+        document = _limit_quotas.get(user_id)
+        return document.model_dump() if document is not None else None
+
+    document = await database.limit_quotas.find_one({"user_id": user_id})
     if not document:
         return None
     return _deserialize_limit_quota(document)
 
 
 async def upsert_limit_quota(quota: LimitQuotaDB) -> LimitQuotaDB:
+    database = _get_db_if_available()
+    if database is None:
+        saved_quota = quota.model_copy(deep=True)
+        _limit_quotas[quota.user_id] = saved_quota
+        return saved_quota
+
     payload = _serialize_limit_quota(quota)
-    updated_document = await get_db().limit_quotas.find_one_and_update(
+    updated_document = await database.limit_quotas.find_one_and_update(
         {"user_id": quota.user_id},
-        {"$set": payload, "$setOnInsert": {"user_id": quota.user_id}},
+        {"$set": payload},
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
@@ -579,17 +737,28 @@ async def upsert_limit_quota(quota: LimitQuotaDB) -> LimitQuotaDB:
 async def insert_limit_quota_history(entries: list[LimitQuotaHistoryDB]) -> None:
     if not entries:
         return
+    database = _get_db_if_available()
+    if database is None:
+        _limit_quota_history.extend(entry.model_copy(deep=True) for entry in entries)
+        return
+
     payloads = [entry.model_dump() for entry in entries]
-    await get_db().limit_quota_history.insert_many(payloads)
+    await database.limit_quota_history.insert_many(payloads)
 
 
 async def list_limit_quota_history(user_id: int | None = None, limit: int = 50) -> list[dict]:
+    database = _get_db_if_available()
+    if database is None:
+        items = [entry.model_dump() for entry in _limit_quota_history if user_id is None or entry.user_id == user_id]
+        items.sort(key=lambda entry: entry["created_at"], reverse=True)
+        return items[:limit]
+
     filters: dict[str, object] = {}
     if user_id is not None:
         filters["user_id"] = user_id
 
     items: list[dict] = []
-    async for document in get_db().limit_quota_history.find(filters).sort("created_at", pymongo.DESCENDING).limit(limit):
+    async for document in database.limit_quota_history.find(filters).sort("created_at", pymongo.DESCENDING).limit(limit):
         if "_id" in document:
             document["_id"] = str(document["_id"])
         items.append(document)
@@ -777,10 +946,30 @@ async def moderate_whitelist_address(
 
 async def increment_limit_quota_usage(user_id: int, amount: Decimal) -> Optional[LimitQuotaDB]:
     now = _utc_now()
+    database = _get_db_if_available()
+    if database is None:
+        existing_quota = _limit_quotas.get(user_id)
+        if existing_quota is None:
+            return None
+
+        updated_quota = existing_quota.model_copy(
+            update={
+                "daily_used": amount if now >= existing_quota.daily_reset_at else existing_quota.daily_used + amount,
+                "daily_reset_at": next_daily_reset_at(now) if now >= existing_quota.daily_reset_at else existing_quota.daily_reset_at,
+                "monthly_used": amount if now >= existing_quota.monthly_reset_at else existing_quota.monthly_used + amount,
+                "monthly_reset_at": (
+                    next_monthly_reset_at(now) if now >= existing_quota.monthly_reset_at else existing_quota.monthly_reset_at
+                ),
+                "updated_at": now,
+            }
+        )
+        _limit_quotas[user_id] = updated_quota
+        return updated_quota
+
     amount_decimal = _to_decimal128(amount)
     next_daily_reset = next_daily_reset_at(now)
     next_monthly_reset = next_monthly_reset_at(now)
-    updated_document = await get_db().limit_quotas.find_one_and_update(
+    updated_document = await database.limit_quotas.find_one_and_update(
         {"user_id": user_id},
         [
             {
@@ -1146,7 +1335,10 @@ async def create_deal_document(material: MaterialDB) -> dict:
 
 
 async def get_all_known_user_ids() -> list[int]:
-    database = get_db()
+    database = _get_db_if_available()
+    if database is None:
+        return sorted({*_exchange_users.keys(), *_bot_users.keys()})
+
     exchange_ids = await database.users.distinct("telegram_user_id")
     legacy_ids = await database.bot_users.distinct("user_id")
     merged = {int(value) for value in exchange_ids + legacy_ids if value is not None}
@@ -1159,6 +1351,10 @@ async def get_all_known_user_ids() -> list[int]:
 
 _web_users: dict[str, WebUserDB] = {}
 _auth_sessions: dict[str, AuthSessionDB] = {}
+_exchange_users: dict[int, ExchangeUserDB] = {}
+_bot_users: dict[int, BotUser] = {}
+_limit_quotas: dict[int, LimitQuotaDB] = {}
+_limit_quota_history: list[LimitQuotaHistoryDB] = []
 
 
 async def create_web_user(user: WebUserDB) -> WebUserDB:

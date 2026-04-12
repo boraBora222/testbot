@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # We copy shared first, then web, to potentially leverage Docker cache better
 COPY ./shared /app/shared
 COPY ./web /app/web
+COPY ./scripts /app/scripts
 
 # Expose the port the app runs on (read from env var, default to 8000)
 # This is informational, the actual mapping happens in docker-compose.yml

@@ -105,6 +105,7 @@ services:
       # Пути монтирования относительно контекста (.)
       - ./web:/app/web
       - ./shared:/app/shared
+      - ./scripts:/app/scripts
     networks:
       - default # Ссылка на статично определенную сеть ниже
     healthcheck:

@@ -4,7 +4,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from shared import db
-from shared.models import WebUserDB
+from shared.models import LimitQuotaDB, WebUserDB, build_default_notification_preferences
+from shared.security_settings import next_daily_reset_at, next_monthly_reset_at, utc_now
 from web.auth import (
     build_auth_user_response,
     build_one_time_code,
@@ -43,6 +44,7 @@ INVALID_VERIFICATION_CODE_MESSAGE = "Invalid or expired verification code."
 NEUTRAL_PASSWORD_RESET_MESSAGE = "If the account is eligible, a password reset code has been sent."
 INVALID_PASSWORD_RESET_CODE_MESSAGE = "Invalid password reset code."
 EXPIRED_PASSWORD_RESET_CODE_MESSAGE = "Password reset code has expired."
+MAX_SHADOW_EXCHANGE_USER_ID = (2**63) - 1
 
 
 def _validate_password_confirmation(password: str, confirm_password: str) -> None:
@@ -79,6 +81,97 @@ def _validate_one_time_code_format(code: str, expected_length: int, code_kind: s
         )
 
 
+async def _allocate_shadow_exchange_user_id() -> int:
+    for _ in range(10):
+        candidate = -((uuid.uuid4().int % MAX_SHADOW_EXCHANGE_USER_ID) + 1)
+        if await db.get_exchange_user(candidate) is None:
+            return candidate
+
+    logger.error("Failed to allocate a unique shadow exchange user id after repeated attempts.")
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to initialize exchange profile.",
+    )
+
+
+async def _create_shadow_exchange_user(payload: RegisterRequest) -> int:
+    exchange_user_id = await _allocate_shadow_exchange_user_id()
+    notification_preferences = build_default_notification_preferences().model_copy(
+        update={
+            "telegram_enabled": False,
+            "email_enabled": True,
+        }
+    )
+
+    try:
+        await db.ensure_exchange_user(
+            telegram_user_id=exchange_user_id,
+            username=None,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            create_bot_user=False,
+            notification_preferences=notification_preferences,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Shadow exchange user provisioning failed during web registration. email_fingerprint=%s",
+            fingerprint_sensitive_value(payload.email),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to initialize exchange profile.",
+        ) from exc
+
+    logger.info(
+        "Shadow exchange user provisioned for web registration. exchange_user_id=%s email_fingerprint=%s",
+        exchange_user_id,
+        fingerprint_sensitive_value(payload.email),
+    )
+    return exchange_user_id
+
+
+async def _initialize_shadow_exchange_quota(exchange_user_id: int) -> None:
+    if await db.get_limit_quota(exchange_user_id) is not None:
+        return
+
+    now = utc_now()
+    quota = LimitQuotaDB(
+        user_id=exchange_user_id,
+        verification_level=settings.web_registration_default_verification_level,
+        daily_limit=settings.web_registration_default_daily_limit,
+        daily_used=0,
+        daily_reset_at=next_daily_reset_at(now),
+        monthly_limit=settings.web_registration_default_monthly_limit,
+        monthly_used=0,
+        monthly_reset_at=next_monthly_reset_at(now),
+        updated_at=now,
+    )
+
+    try:
+        await db.upsert_limit_quota(quota)
+    except Exception as exc:
+        logger.exception(
+            "Shadow exchange quota initialization failed during web registration. exchange_user_id=%s",
+            exchange_user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to initialize exchange profile.",
+        ) from exc
+
+
+async def _provision_shadow_exchange_profile(payload: RegisterRequest) -> int:
+    exchange_user_id = await _create_shadow_exchange_user(payload)
+    try:
+        await _initialize_shadow_exchange_quota(exchange_user_id)
+    except Exception:
+        await db.delete_exchange_user_data(exchange_user_id)
+        raise
+    return exchange_user_id
+
+
 @router.post("/register", response_model=AuthUserResponse)
 async def register(payload: RegisterRequest, response: Response) -> AuthUserResponse:
     _validate_password_confirmation(payload.password, payload.confirm_password)
@@ -88,12 +181,23 @@ async def register(payload: RegisterRequest, response: Response) -> AuthUserResp
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User with this email already exists.")
 
+    full_name = f"{payload.first_name} {payload.last_name}".strip()
+    linked_exchange_user_id = await _provision_shadow_exchange_profile(payload)
     user = WebUserDB(
         id=f"user_{uuid.uuid4().hex}",
         email=payload.email,
         password_hash=hash_password(payload.password),
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        name=full_name,
+        company=payload.company,
+        linked_exchange_user_id=linked_exchange_user_id,
     )
-    await db.create_web_user(user)
+    try:
+        await db.create_web_user(user)
+    except Exception:
+        await db.delete_exchange_user_data(linked_exchange_user_id)
+        raise
 
     session = await create_auth_session_for_user(user.id)
     set_auth_cookie(response, session.session_id)

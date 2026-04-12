@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, PositiveInt
+from shared.types.enums import VerificationLevel
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ class AppSettings(BaseSettings):
     log_level: str = "INFO"
     async_queue_lag_warn_ms: PositiveInt = 5_000
     async_notification_total_warn_ms: PositiveInt = 15_000
+    web_registration_default_verification_level: VerificationLevel = VerificationLevel.BASIC
+    web_registration_default_daily_limit: Decimal = Decimal("1000000")
+    web_registration_default_monthly_limit: Decimal = Decimal("5000000")
 
     # Google Gemini API settings (kept for compatibility; optional now)
     google_gemini_api_key: Optional[str] = None

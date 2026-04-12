@@ -17,6 +17,9 @@ async def _register(
     email: str = "User@Example.com",
     password: str = "Password1",
     confirm_password: str = "Password1",
+    first_name: str = "Test",
+    last_name: str = "User",
+    company: str = "Example LLC",
 ) -> httpx.Response:
     return await client.post(
         "/auth/register",
@@ -24,6 +27,9 @@ async def _register(
             "email": email,
             "password": password,
             "confirm_password": confirm_password,
+            "first_name": first_name,
+            "last_name": last_name,
+            "company": company,
         },
     )
 
@@ -56,7 +62,31 @@ async def test_register_rejects_duplicate_password_mismatch_and_weak_password(
 ) -> None:
     register_response = await _register(auth_async_client)
     assert register_response.status_code == 200
-    assert register_response.json()["email"] == "user@example.com"
+    register_payload = register_response.json()
+    assert register_payload["email"] == "user@example.com"
+    assert register_payload["first_name"] == "Test"
+    assert register_payload["last_name"] == "User"
+    assert register_payload["company"] == "Example LLC"
+    assert register_payload["name"] == "Test User"
+    stored_user = db._web_users["user@example.com"]
+    assert stored_user.linked_exchange_user_id is not None
+    assert stored_user.linked_exchange_user_id < 0
+
+    shadow_exchange_user = await db.get_exchange_user(stored_user.linked_exchange_user_id)
+    assert shadow_exchange_user is not None
+    assert shadow_exchange_user["telegram_user_id"] == stored_user.linked_exchange_user_id
+    assert shadow_exchange_user["first_name"] == "Test"
+    assert shadow_exchange_user["last_name"] == "User"
+    assert shadow_exchange_user["notification_preferences"]["telegram_enabled"] is False
+    assert shadow_exchange_user["notification_preferences"]["email_enabled"] is True
+    quota_payload = await db.get_limit_quota(stored_user.linked_exchange_user_id)
+    assert quota_payload is not None
+    assert quota_payload["user_id"] == stored_user.linked_exchange_user_id
+    assert quota_payload["verification_level"] == settings.web_registration_default_verification_level
+    assert quota_payload["daily_limit"] == settings.web_registration_default_daily_limit
+    assert quota_payload["daily_used"] == 0
+    assert quota_payload["monthly_limit"] == settings.web_registration_default_monthly_limit
+    assert quota_payload["monthly_used"] == 0
 
     duplicate_response = await _register(auth_async_client, email="USER@example.com")
     assert duplicate_response.status_code == 409

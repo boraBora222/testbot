@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from shared import db
-from shared.models import AuthSessionDB, WebUserDB
+from shared.models import AuthSessionDB, LimitQuotaDB, WebUserDB, build_default_notification_preferences
+from shared.security_settings import next_daily_reset_at, next_monthly_reset_at
+from shared.types.enums import VerificationLevel
 
 pytestmark = pytest.mark.anyio
 
@@ -149,3 +151,121 @@ async def test_password_reset_state_updates_password_and_attempts() -> None:
     assert stored_user.password_reset_code_hash is None
     assert stored_user.password_reset_code_expires_at is None
     assert stored_user.password_reset_attempts == 0
+
+
+async def test_exchange_user_storage_supports_in_memory_fallback_and_notification_updates() -> None:
+    initial_preferences = build_default_notification_preferences().model_copy(
+        update={
+            "telegram_enabled": False,
+            "email_enabled": True,
+        }
+    )
+    await db.ensure_exchange_user(
+        telegram_user_id=-101,
+        username=None,
+        first_name="Web",
+        last_name="User",
+        create_bot_user=False,
+        notification_preferences=initial_preferences,
+    )
+
+    stored_user = await db.get_exchange_user(-101)
+    assert stored_user is not None
+    assert stored_user["telegram_user_id"] == -101
+    assert stored_user["first_name"] == "Web"
+    assert stored_user["last_name"] == "User"
+    assert stored_user["notification_preferences"]["telegram_enabled"] is False
+    assert stored_user["notification_preferences"]["email_enabled"] is True
+
+    updated_preferences = build_default_notification_preferences().model_copy(
+        update={
+            "telegram_enabled": False,
+            "email_enabled": False,
+        }
+    )
+    assert await db.update_exchange_user_notification_preferences(-101, updated_preferences) is True
+
+    refreshed_user = await db.get_exchange_user(-101)
+    assert refreshed_user is not None
+    assert refreshed_user["notification_preferences"]["telegram_enabled"] is False
+    assert refreshed_user["notification_preferences"]["email_enabled"] is False
+
+
+async def test_limit_quota_storage_supports_in_memory_fallback_and_usage_updates() -> None:
+    quota = LimitQuotaDB(
+        user_id=-101,
+        verification_level=VerificationLevel.BASIC,
+        daily_limit=1000000,
+        daily_used=0,
+        daily_reset_at=next_daily_reset_at(datetime.now(timezone.utc)),
+        monthly_limit=5000000,
+        monthly_used=0,
+        monthly_reset_at=next_monthly_reset_at(datetime.now(timezone.utc)),
+    )
+
+    saved_quota = await db.upsert_limit_quota(quota)
+    assert saved_quota == quota
+
+    stored_quota = await db.get_limit_quota(-101)
+    assert stored_quota is not None
+    assert stored_quota["verification_level"] == VerificationLevel.BASIC
+    assert stored_quota["daily_limit"] == 1000000
+    assert stored_quota["monthly_limit"] == 5000000
+
+    updated_quota = await db.increment_limit_quota_usage(-101, 250000)
+    assert updated_quota is not None
+    assert updated_quota.daily_used == 250000
+    assert updated_quota.monthly_used == 250000
+
+
+async def test_limit_quota_upsert_uses_non_conflicting_mongo_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    quota = LimitQuotaDB(
+        user_id=-202,
+        verification_level=VerificationLevel.BASIC,
+        daily_limit=1000000,
+        daily_used=0,
+        daily_reset_at=next_daily_reset_at(datetime.now(timezone.utc)),
+        monthly_limit=5000000,
+        monthly_used=0,
+        monthly_reset_at=next_monthly_reset_at(datetime.now(timezone.utc)),
+    )
+
+    class FakeLimitQuotaCollection:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def find_one_and_update(self, filters, update, *, upsert, return_document):
+            self.calls.append(
+                {
+                    "filters": filters,
+                    "update": update,
+                    "upsert": upsert,
+                    "return_document": return_document,
+                }
+            )
+            return {
+                "_id": "quota_doc",
+                **update["$set"],
+            }
+
+    class FakeDatabase:
+        def __init__(self) -> None:
+            self.limit_quotas = FakeLimitQuotaCollection()
+
+    fake_database = FakeDatabase()
+    monkeypatch.setattr(db, "_get_db_if_available", lambda: fake_database)
+
+    saved_quota = await db.upsert_limit_quota(quota)
+
+    assert saved_quota == quota
+    assert fake_database.limit_quotas.calls == [
+        {
+            "filters": {"user_id": -202},
+            "update": fake_database.limit_quotas.calls[0]["update"],
+            "upsert": True,
+            "return_document": fake_database.limit_quotas.calls[0]["return_document"],
+        }
+    ]
+    assert "$set" in fake_database.limit_quotas.calls[0]["update"]
+    assert "$setOnInsert" not in fake_database.limit_quotas.calls[0]["update"]
+    assert fake_database.limit_quotas.calls[0]["update"]["$set"]["user_id"] == -202
